@@ -4,35 +4,27 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.api.v1.router import api_router
-from app.modules.strategy.engine import strategy_engine
 from app.core.logger import setup_logging
+from app.utils.scheduler import MarketScheduler
 
 # Setup Logging
 setup_logging()
 logger = logging.getLogger("API")
 
-# Lifespan Manager (Startup/Shutdown Events)
+scheduler = MarketScheduler()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. STARTUP
-    logger.info("🌐 API Starting... Launching Strategy Engine.")
-    # Run the engine in the background
-    task = asyncio.create_task(strategy_engine.start())
-    
-    yield # App runs here
-    
-    # 2. SHUTDOWN
-    logger.info("🛑 API Stopping... Shutting down Engine.")
-    strategy_engine.is_running = False
-    
-    # Force wake up the sleeping engine
-    task.cancel() 
-    
+    # Start the Smart Scheduler (NOT the strategy directly)
+    task = asyncio.create_task(scheduler.run_loop())
+    yield
+    # Cleanup
+    task.cancel()
     try:
         await task
     except asyncio.CancelledError:
-        logger.info("✅ Strategy Engine Gracefully Stopped.")
-
+        pass
+    
 # Initialize App
 app = FastAPI(
     title="NeoPulse Commander",

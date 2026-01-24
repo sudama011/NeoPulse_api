@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import time
+import json
 from app.adapters.kotak.client import kotak_client
 from app.core.events import event_bus
 
@@ -13,7 +13,7 @@ class FeedEngine:
         self.client = kotak_client.client
         self.is_running = False
         self._loop = None
-        self.active_tokens = [] # Remember what we subscribed to
+        self.active_tokens = [] 
         self.reconnect_attempts = 0
 
     @classmethod
@@ -22,27 +22,51 @@ class FeedEngine:
             cls._instance = FeedEngine()
         return cls._instance
 
-    def on_tick(self, message):
+    def on_message_router(self, message):
         """
-        Runs in SDK Thread. Pushes data to Async Event Bus.
+        The Main Traffic Controller.
+        Kotak sends ALL data here. We must sort it.
         """
         try:
-            # Reset reconnect counter on successful data
-            if self.reconnect_attempts > 0:
-                self.reconnect_attempts = 0
-                logger.info("✅ Connection Stabilized.")
+            # 1. If it's a list, it's usually Market Ticks
+            if isinstance(message, list):
+                if self._loop and not self._loop.is_closed():
+                    self._loop.call_soon_threadsafe(
+                        event_bus.tick_queue.put_nowait,
+                        message
+                    )
+                return
 
-            if self._loop and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(
-                    event_bus.tick_queue.put_nowait,
-                    message
-                )
+            # 2. If it's a Dict, check what kind
+            if isinstance(message, dict):
+                # A. Market Data Wrapper
+                if 'data' in message and isinstance(message['data'], list):
+                     if self._loop and not self._loop.is_closed():
+                        self._loop.call_soon_threadsafe(
+                            event_bus.tick_queue.put_nowait,
+                            message['data']
+                        )
+                
+                # B. Order Update (Look for specific keys)
+                # Kotak order updates usually have 'orderId' or 'orderStatus'
+                elif 'orderId' in message or 'orderStatus' in message:
+                    logger.info(f"📨 Order Update Received: {message.get('orderId', 'Unknown')}")
+                    if self._loop and not self._loop.is_closed():
+                        self._loop.call_soon_threadsafe(
+                            event_bus.order_queue.put_nowait,
+                            message
+                        )
+                
+                # C. Unknown/Heartbeat
+                else:
+                    # logger.debug(f"Heartbeat/Other: {message}")
+                    pass
+
         except Exception as e:
-            logger.error(f"🔥 Bridging Error: {e}")
+            logger.error(f"🔥 Routing Error: {e}")
 
     def on_error(self, error):
         logger.error(f"❌ Socket Error: {error}")
-        # Trigger reconnect logic
         self._trigger_reconnect()
 
     def on_close(self, message):
@@ -96,13 +120,14 @@ class FeedEngine:
 
     async def start(self, tokens: list):
         self._loop = asyncio.get_running_loop()
-        self.active_tokens = tokens # Save for reconnection
+        self.active_tokens = tokens 
         
         # 1. Login
         kotak_client.login()
         
         # 2. Attach Callbacks
-        self.client.on_message = self.on_tick
+        # 🚨 KEY CHANGE: We point on_message to our new Router
+        self.client.on_message = self.on_message_router
         self.client.on_error = self.on_error
         self.client.on_close = self.on_close
         self.client.on_open = lambda msg: logger.info("✅ WebSocket Connected!")

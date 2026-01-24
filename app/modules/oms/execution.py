@@ -3,6 +3,7 @@ import asyncio
 from app.adapters.kotak.client import kotak_client
 from app.core.settings import settings
 from app.adapters.telegram.client import telegram_client 
+from app.utils.limiter import api_limiter
 
 logger = logging.getLogger("OMS")
 
@@ -16,6 +17,9 @@ class OrderExecutor:
         return cls._instance
 
     async def place_order(self, symbol: str, token: str, side: str, qty: int, price: float = 0.0):
+        # 🛡️ 1. WAIT FOR PERMISSION (Prevents Ban)
+        await api_limiter.acquire()
+
         try:
             # 1. Prepare Alert Message
             emoji = "🔵" if side == "BUY" else "🔴"
