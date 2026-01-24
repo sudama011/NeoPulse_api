@@ -1,7 +1,7 @@
 # --- Variables ---
 VENV = .venv
-PYTHON = $(VENV)/bin/python
-PIP = $(VENV)/bin/pip
+PYTHON = $(VENV)/bin/python3
+PIP = $(VENV)/bin/pip3
 UVICORN = $(VENV)/bin/uvicorn
 BIN = $(VENV)/bin
 

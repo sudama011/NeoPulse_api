@@ -1,101 +1,146 @@
-# NeoPulse_api
+# NeoPulse_api ⚡
 
-**NeoPulse_api** is a production-grade, event-driven intraday algorithmic trading bot specifically engineered for the **Kotak Securities Neo API**. Designed for the NSE (National Stock Exchange), it prioritizes capital preservation through a multi-layered **NeoSentinel Risk Shield** while executing high-precision strategies like Opening Range Breakout (ORB).
+## Overview
 
-## 🚀 Key Features
+NeoPulse_api is a high-frequency, asynchronous trading bot engineered for the Indian Equities and Derivatives market. It leverages the **Kotak Securities Neo API v2** to execute zero-brokerage intraday strategies.
 
-* **Modular Architecture:** Decoupled components for Auth, Risk, Strategy, and Execution for easy extensibility.
-* **NeoSentinel Risk Shield:** * **Global Kill-Switch:** Instantly halts all trading activity if limits are breached.
-* **Daily Loss Protection:** Hard-stop on MTM losses.
-* **Auto Square-Off:** Mandatory intraday exit at 3:10 PM.
+The system is built on a **Modular Monolith** architecture using **FastAPI** for the event loop, **PostgreSQL** for persistence, and **Telegram** for command-and-control. It features a "Virtual Broker" for live paper trading and a unified backtesting engine.
 
+## Key Features
 
-* **Event-Driven Engine:** Real-time WebSocket ingestion for tick-by-tick processing.
-* **Friction-Aware Logic:** Integrated Tax Calculator tuned for Kotak Neo's zero-brokerage plan (~0.04% statutory taxes).
-* **State Recovery:** Intelligent reconciliation logic to resume operations and track positions after system restarts or crashes.
+* **🚀 Ultra-Low Latency:** AsyncIO-driven core with non-blocking WebSocket ingestion.
+* **🛡️ NeoSentinel Risk Engine:** Pre-trade checks for circuit limits, fat-finger errors, and max drawdown.
+* **🧪 Virtual Broker:** Live simulation mode that mimics Kotak API responses 1:1.
+* **🧠 Hybrid Strategy Engine:** Supports Momentum, Mean Reversion, and Iceberg execution.
+* **📱 Telegram Ops:** Full control via chat (PnL monitoring, Kill Switch, Signal Approvals).
 
-## 🛠 Tech Stack
+## Quick Start
 
-* **Core:** Python 3.10+
-* **API Client:** `neo-api-client` (Official Kotak Neo SDK)
-* **Web Framework:** FastAPI (Monitoring Dashboard & Webhooks)
-* **Data Science:** Pandas & NumPy
-* **Persistence:** PostgreSQL (Trade logs & Performance tracking)
-* **Validation:** Pydantic v2
+### Prerequisites
 
----
+* Python 3.10+
+* PostgreSQL 14+ (with TimescaleDB recommended)
+* Kotak Neo API Credentials
 
-## 📂 Project Structure
+### Installation
 
-```text
-app/
-├── api/             # FastAPI routes for monitoring & control
-├── core/            # App configuration & settings
-├── db/              # Database models & session management
-├── engine/          # The "Trading Brain" (Auth, Data, Execution, Risk)
-├── models/          # Shared Pydantic/Domain models
-├── repositories/    # Data access layer for trades & state
-├── services/        # Business logic orchestration
-├── strategies/      # Strategy implementations (e.g., ORB)
-└── utils/           # Time & Math helpers
-
-```
-
----
-
-## ⚙️ Setup & Installation
-
-### 1. Prerequisites
-
-* Oracle Cloud / Ubuntu Linux Instance.
-* Python 3.10 or higher.
-* PostgreSQL Database.
-
-### 2. Installation
-
+1. **Clone the Repository**
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/NeoPulse_api.git
-cd NeoPulse_api
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
+git clone [https://github.com/your-org/neopulse_api.git](https://www.google.com/search?q=https://github.com/your-org/neopulse_api.git)
+cd neopulse_api
 ```
 
-### 3. Environment Configuration
-
-Create a `.env` file in the root directory:
-
-```env
-NEO_API_KEY=your_key
-NEO_API_SECRET=your_secret
-NEO_CONSUMER_KEY=your_consumer_key
-NEO_CONSUMER_SECRET=your_consumer_secret
-NEO_PASSWORD=your_password
-NEO_TOTP_SEED=your_totp_seed
-DATABASE_URL=postgresql://user:password@localhost/neopulse
-
+2. **Environment Setup**
+```bash
+cp.env.example.env
+# Edit.env with your CONSUMER_KEY, SECRET, and MPIN
 ```
 
----
+3. **Run with Docker**
+```bash
+docker-compose up -d --build
+```
 
-## 📈 Strategic Logic: ORB
+## Documentation
 
-The bot currently ships with the **Opening Range Breakout (ORB)** strategy.
+Full documentation is available in the `docs/` folder.
 
-* **Range Definition:** 09:15 AM - 09:30 AM.
-* **Execution:** SL-Limit orders placed at range high/low.
-* **Breakeven Calculation:** Uses the `TaxCalculator` to ensure target prices cover statutory costs:
+* (docs/architecture/system_design.md)
+* (docs/strategies/logic.md)
+* [User Manual](docs/operations/manual.md)
 
+## Project Structure
 
-
----
-
-## ⚠️ Disclaimer
-
-Trading in equities and derivatives involves substantial risk. **NeoPulse_api** is provided as-is for educational and research purposes. The developers are not responsible for financial losses incurred through the use of this software. Always test in a paper-trading/sandbox environment before deploying real capital.
+NeoPulse_api/
+├── app/                        # The Application Core
+│   ├── __init__.py
+│   ├── main.py                 # FastAPI Entry Point (The "Brain")
+│   │
+│   ├── core/                   # ⚙️ Infrastructure & Config
+│   │   ├── __init__.py
+│   │   ├── settings.py           # Pydantic Settings (Loads .env)
+│   │   ├── security.py         # Encryption & JWT Handling
+│   │   ├── logger.py          # Custom Log Formatter (JSON/Text)
+│   │   └── events.py           # Global Event Bus (Asyncio Queue)
+│   │
+│   ├── db/                     # 💾 Database Infrastructure
+│   │   ├── __init__.py
+│   │   ├── session.py          # Async Session Factory (get_db)
+│   │   └── base.py             # Imports all models (for Alembic auto-generation)
+│   │
+│   ├── models/                 # 🗄️ SQLAlchemy Models (The "Truth")
+│   │   ├── __init__.py
+│   │   ├── base.py             # BaseModel
+│   │   ├── users.py            # User & Auth tables
+│   │   ├── market_data.py      # Instrument Master & Ticks
+│   │   └── orders.py           # Ledger, TradeBook, Strategy Config
+│   │
+│   ├── schemas/                # 📝 Pydantic Schemas (Data Validation)
+│   │   ├── __init__.py
+│   │   ├── common.py           # Shared Enums/Base Models
+│   │   ├── requests.py         # Input validation (e.g., PlaceOrderRequest)
+│   │   └── responses.py        # Output formatting (e.g., PnLReport)
+│   │
+│   ├── adapters/               # 🔌 External Integrations
+│   │   ├── kotak/
+│   │   │   ├── auth.py         # Login & Token Management
+│   │   │   ├── rest.py         # API Wrapper (Orders, Positions)
+│   │   │   └── socket.py       # WebSocket Client
+│   │   ├── telegram/
+│   │   │   ├── bot.py          # Bot Lifecycle Manager
+│   │   │   └── handlers.py     # Command Logic (/status, /kill)
+│   │   └── virtual/            # "Virtual Broker" Mock Implementation
+│   │
+│   ├── modules/                # 🧠 Business Logic (The "Monolith")
+│   │   ├── ingestion/          # Ticker -> Candle Aggregation
+│   │   │   ├── processor.py
+│   │   │   └── drill.py        # Morning Master Sync Logic
+│   │   ├── strategy/
+│   │   │   ├── engine.py       # Strategy Runner
+│   │   │   └── lib/            # Specific Strategy Logic
+│   │   │       ├── momentum.py
+│   │   │       └── gap_fill.py
+│   │   ├── oms/                # Order Management System
+│   │   │   ├── router.py       # Routes to Real or Virtual Broker
+│   │   │   └── iceberg.py      # Order Slicing Logic
+│   │   └── risk/               # NeoSentinel
+│   │       └── checks.py       # Fat-finger & Circuit limits
+│   │
+│   └── api/                    # 🌐 Web API (Future Dashboard)
+│       └── v1/
+│           ├── deps.py         # Dependency Injection (Current User)
+│           └── routers/
+│               ├── auth.py
+│               ├── dashboard.py
+│               └── webhooks.py # For TradingView alerts (optional)
+│
+├── db/                         # 🛠️ Database Migrations
+│   ├── migrations/             # Alembic versions (SQL scripts)
+│   └── alembic.ini             # Migration Config
+│
+├── docs/                       # 📚 Documentation
+│   ├── architecture/
+│   ├── api/
+│   └── setup.md
+│
+├── scripts/                    # 🤖 Operational Scripts
+│   ├── init_db.py              # Create tables
+│   ├── morning_drill.py        # Cron job: Sync Master
+│   └── backfill_data.py        # Import historical data
+|   └── backup_db.sh            # Backup script
+|
+├── tests/                      # 🧪 Testing
+│   ├── conftest.py             # Fixtures (DB, Event Loop)
+│   ├── unit/                   # Fast logic tests
+│   └── integration/            # Full flow tests (Mocked Kotak)
+│   └── backtest/               # Backtesting
+│
+├── .env                        # Secrets (NEVER COMMIT)
+├── .gitignore
+├── docker-compose.yml
+└── requirements.txt
+|
+|__ Makefile
+|__ README.md
+|__ pyproject.toml
+|__ .env.example
