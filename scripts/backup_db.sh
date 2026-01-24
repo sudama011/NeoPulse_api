@@ -1,0 +1,1 @@
+pg_dump -h localhost -U neopulse neopulse_db | gzip > /backups/db_$(date +%F_%H%M).sql.gz

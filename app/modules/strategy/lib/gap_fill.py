@@ -1,0 +1,1 @@
+# Implementation: Morning Gap Strategy
