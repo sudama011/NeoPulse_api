@@ -3,26 +3,30 @@ import sys
 import os
 import logging
 
-# 1. Fix Path
+# Fix Path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, project_root)
 
-# 2. Setup Logger
+# Setup Logger
 from app.core.logger import setup_logging
 setup_logging()
 
-from app.services.backtest import BacktestEngine
+from app.services.backtest import BacktestService
 
 async def main():
-    # Initialize Engine
-    engine = BacktestEngine()
+    # Pick a volatile stock for Momentum testing
+    # Note: Yahoo Finance requires '.NS' suffix for NSE stocks
+    symbol = "RELIANCE.NS" 
     
-    # Create Data
-    engine.generate_sine_wave_data()
+    logger = logging.getLogger("Main")
+    logger.info(f"🧪 Starting Backtest on {symbol}...")
     
-    # Run Simulation
+    # Run for last 5 days
+    engine = BacktestService(symbol, days=5)
     await engine.run()
 
 if __name__ == "__main__":
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())

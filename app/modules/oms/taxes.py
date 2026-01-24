@@ -5,8 +5,7 @@ class TaxCalculator:
     def calculate(self, buy_val: float, sell_val: float, qty: int):
         turnover = buy_val + sell_val
         
-        # 1. Brokerage (Zerodha/Kotak standard usually flat or pct)
-        # Kotak Neo Intraday is often Free, but let's assume 20 rs flat for safety
+        # 1. Brokerage Kotak Neo API Intraday 0 fee
         brokerage = 0.0 
         
         # 2. STT (0.025% on Sell side for Intraday Equity)

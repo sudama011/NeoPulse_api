@@ -24,7 +24,14 @@ async def lifespan(app: FastAPI):
     # 2. SHUTDOWN
     logger.info("🛑 API Stopping... Shutting down Engine.")
     strategy_engine.is_running = False
-    await task
+    
+    # Force wake up the sleeping engine
+    task.cancel() 
+    
+    try:
+        await task
+    except asyncio.CancelledError:
+        logger.info("✅ Strategy Engine Gracefully Stopped.")
 
 # Initialize App
 app = FastAPI(
