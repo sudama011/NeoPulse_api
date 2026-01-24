@@ -51,6 +51,7 @@ Full documentation is available in the `docs/` folder.
 
 ## Project Structure
 
+```
 NeoPulse_api/
 ├── app/                        # The Application Core
 │   ├── __init__.py
@@ -144,3 +145,5 @@ NeoPulse_api/
 |__ README.md
 |__ pyproject.toml
 |__ .env.example
+
+```

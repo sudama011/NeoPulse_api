@@ -1,5 +1,5 @@
-from app.modules.strategy.lib.base import BaseStrategy
-from app.modules.strategy.lib.indicators import calculate_rsi, calculate_vwap
+from app.modules.strategy.base import BaseStrategy
+from app.modules.strategy.indicators import calculate_rsi, calculate_vwap
 import logging
 
 class MomentumStrategy(BaseStrategy):
