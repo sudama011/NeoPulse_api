@@ -1,29 +1,37 @@
-# app/modules/ingestion/feed.py
 import asyncio
 import logging
-import json
+import time
 from app.adapters.kotak.client import kotak_client
 from app.core.events import event_bus
-from app.core.settings import settings
 
 logger = logging.getLogger("LiveFeed")
 
 class FeedEngine:
+    _instance = None
+
     def __init__(self):
         self.client = kotak_client.client
         self.is_running = False
-        self._loop = None # Reference to the main asyncio loop
+        self._loop = None
+        self.active_tokens = [] # Remember what we subscribed to
+        self.reconnect_attempts = 0
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = FeedEngine()
+        return cls._instance
 
     def on_tick(self, message):
         """
-        ⚠️ CRITICAL: This runs in a separate SDK Thread.
-        Do NOT await anything here. 
-        Do NOT touch the DB here.
-        Just push to the bridge.
+        Runs in SDK Thread. Pushes data to Async Event Bus.
         """
         try:
-            # message is usually a List or Dict from the SDK
-            # We schedule the 'put' operation on the main event loop
+            # Reset reconnect counter on successful data
+            if self.reconnect_attempts > 0:
+                self.reconnect_attempts = 0
+                logger.info("✅ Connection Stabilized.")
+
             if self._loop and not self._loop.is_closed():
                 self._loop.call_soon_threadsafe(
                     event_bus.tick_queue.put_nowait,
@@ -34,41 +42,78 @@ class FeedEngine:
 
     def on_error(self, error):
         logger.error(f"❌ Socket Error: {error}")
+        # Trigger reconnect logic
+        self._trigger_reconnect()
 
     def on_close(self, message):
         logger.warning(f"⚠️ Socket Closed: {message}")
+        self._trigger_reconnect()
+
+    def _trigger_reconnect(self):
+        """
+        Schedules a reconnection task on the main event loop.
+        """
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._reconnect()
+            )
+
+    async def _reconnect(self):
+        """
+        The Healing Logic.
+        1. Wait (Exponential Backoff)
+        2. Login again (Session might have expired)
+        3. Re-subscribe
+        """
+        self.reconnect_attempts += 1
+        wait_time = min(self.reconnect_attempts * 2, 30) # Max 30s wait
+        
+        logger.info(f"🔄 Attempting Reconnect #{self.reconnect_attempts} in {wait_time}s...")
+        await asyncio.sleep(wait_time)
+
+        try:
+            logger.info("🔑 Refreshing Session...")
+            kotak_client.is_logged_in = False # Force login
+            kotak_client.login()
+            
+            logger.info(f"📡 Re-subscribing to {len(self.active_tokens)} tokens...")
+            # Re-attach callbacks (SDK sometimes clears them on close)
+            self.client.on_message = self.on_tick
+            self.client.on_error = self.on_error
+            self.client.on_close = self.on_close
+            
+            # Resend Subscription Packet
+            sub_packet = [
+                {"instrument_token": str(t), "exchange_segment": "nse_cm"} 
+                for t in self.active_tokens
+            ]
+            kotak_client.subscribe(sub_packet)
+            
+        except Exception as e:
+            logger.error(f"💥 Reconnect Failed: {e}")
+            # It will retry automatically because on_error/on_close will trigger again
 
     async def start(self, tokens: list):
-        """
-        Starts the WebSocket and subscribes to tokens.
-        """
         self._loop = asyncio.get_running_loop()
+        self.active_tokens = tokens # Save for reconnection
         
-        # 1. Login if needed
+        # 1. Login
         kotak_client.login()
         
-        # 2. Attach Callbacks to the SDK Wrapper
-        # The SDK uses these attributes to route messages
+        # 2. Attach Callbacks
         self.client.on_message = self.on_tick
         self.client.on_error = self.on_error
         self.client.on_close = self.on_close
         self.client.on_open = lambda msg: logger.info("✅ WebSocket Connected!")
 
-        # 3. Subscribe (SnapQuote=False for Full Ticks)
+        # 3. Subscribe
         logger.info(f"📡 Subscribing to {len(tokens)} tokens...")
-        
-        # Determine the format based on SDK version (List of dicts or just tokens)
-        # Standard Kotak Neo V2 format:
-        subscription_packet = [
+        sub_packet = [
             {"instrument_token": str(t), "exchange_segment": "nse_cm"} 
             for t in tokens
         ]
-        
-        kotak_client.subscribe(
-            tokens=subscription_packet, 
-            is_index=False, 
-            is_depth=False
-        )
+        kotak_client.subscribe(sub_packet)
         self.is_running = True
 
-feed_engine = FeedEngine()
+feed_engine = FeedEngine.get_instance()
