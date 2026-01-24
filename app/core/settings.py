@@ -29,11 +29,11 @@ class Settings(BaseSettings):
     NEO_MPIN: str
     NEO_TOTP_SEED: str
 
-    TRADING_MODE: str = "PAPER"  # PAPER, LIVE
+    PAPER_TRADING: bool = True
     
     # --- Telegram Control Center ---
     TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_ADMIN_ID: int  # Your User ID (security gate)
+    TELEGRAM_CHAT_ID: int  # Your User ID (security gate)
 
     # --- Risk & Capital (The "Two-Bullet" Logic) ---
     MAX_CAPITAL_ALLOCATION: float = 10000.0

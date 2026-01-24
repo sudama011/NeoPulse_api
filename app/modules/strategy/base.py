@@ -9,9 +9,9 @@ class BaseStrategy(ABC):
         self.token = str(token)
         self.logger = logging.getLogger(f"STRAT:{name}")
         
-        # Candle Construction State
+        # Candle Construction
         self.current_candle = None
-        self.candles = [] # List of closed 1-min candles
+        self.candles = [] 
         
         # Risk State
         self.position = 0
@@ -19,11 +19,21 @@ class BaseStrategy(ABC):
 
     async def on_tick(self, tick: dict):
         """
-        Ingests a tick, updates the current candle, and calls `on_candle_close` if minute changes.
+        Ingests a tick.
+        CRITICAL CHANGE: Uses tick['ts'] for time, not datetime.now()
         """
         ltp = float(tick.get('ltp', 0))
         vol = int(tick.get('v', 0))
-        ts = datetime.now() # In real prod, use tick timestamp if available
+        
+        # 🟢 TIME TRAVEL FIX:
+        # If the tick has a timestamp (backtest), use it. 
+        # Otherwise (live), use system time.
+        tick_time = tick.get('ts')
+        if tick_time:
+            # Assume tick['ts'] is a datetime object
+            ts = tick_time
+        else:
+            ts = datetime.now()
 
         # 1. Initialize Candle
         if not self.current_candle:
@@ -33,20 +43,21 @@ class BaseStrategy(ABC):
             }
             return
 
-        # 2. Check if Minute Changed (Candle Close)
+        # 2. Check for Minute Change (using the tick's time)
+        # Note: In backtest, we might jump from 09:15:59 to 09:16:01
         if ts.minute != self.current_candle['start_time'].minute:
-            # Finalize old candle
+            # A. Close the old candle
             closed_candle = self.current_candle
             self.candles.append(closed_candle)
             
-            # Keep only last 100 candles to save memory
+            # Keep memory clean
             if len(self.candles) > 100:
                 self.candles.pop(0)
 
-            # Trigger Logic
+            # B. Trigger Logic
             await self.on_candle_close(closed_candle)
 
-            # Start New Candle
+            # C. Start New Candle
             self.current_candle = {
                 'open': ltp, 'high': ltp, 'low': ltp, 'close': ltp,
                 'volume': vol, 'start_time': ts.replace(second=0, microsecond=0)
@@ -57,9 +68,10 @@ class BaseStrategy(ABC):
             c['high'] = max(c['high'], ltp)
             c['low'] = min(c['low'], ltp)
             c['close'] = ltp
-            c['volume'] += vol # Accumulate volume
+            c['volume'] += vol
+            # Update volume logic can be complex in snapshots, 
+            # but for simple backtest this is fine.
 
     @abstractmethod
     async def on_candle_close(self, candle: dict):
-        """Logic runs here every minute"""
         pass
