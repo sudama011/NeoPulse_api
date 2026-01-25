@@ -1,0 +1,13 @@
+/var/log/neopulse/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 ubuntu ubuntu
+    # Script to run after rotation (optional restart of logging service)
+    postrotate
+        docker kill --signal="SIGHUP" neopulse_container_id
+    endscript
+}

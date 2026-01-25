@@ -17,7 +17,7 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             print("⏳ Dropping existing tables (optional, strictly for dev)...")
-            await conn.run_sync(Base.metadata.drop_all) # Uncomment for fresh start
+            # await conn.run_sync(Base.metadata.drop_all) # Uncomment for fresh start
             
             print("⏳ Creating new tables...")
             await conn.run_sync(Base.metadata.create_all)

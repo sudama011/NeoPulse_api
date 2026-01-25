@@ -83,6 +83,36 @@ class KotakClient:
             exchange_segment=segment,
             symbol=symbol
         )
+    
+    def get_positions(self, segment="nse_cm"):
+        """
+        Fetches current open positions from the broker.
+        Returns a list of dictionaries.
+        """
+        if not self.is_logged_in:
+            self.login()
+            
+        try:
+            # Neo API call to get positions
+            return self.client.positions(segment=segment)
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch positions: {e}")
+            return []
+
+    def get_limits(self, segment="nse_cm"):
+        """
+        Fetches available funds/margins.
+        """
+        if not self.is_logged_in:
+            self.login()
+
+        try:
+            # Neo API call to get limits
+            # Note: Returns a list of limits for different segments
+            return self.client.limits(segment=segment)
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch limits: {e}")
+            return {}
 
 # Global Accessor
 kotak_client = KotakClient.get_instance()

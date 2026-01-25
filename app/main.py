@@ -24,10 +24,10 @@ async def lifespan(app: FastAPI):
         await task
     except asyncio.CancelledError:
         pass
-    
+
 # Initialize App
 app = FastAPI(
-    title="NeoPulse Commander",
+    title="NeoPulse",
     description="Algorithmic Trading Control Plane",
     version="1.0.0",
     lifespan=lifespan

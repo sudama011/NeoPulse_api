@@ -1,0 +1,32 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - git
+  - curl
+  - ufw
+  - fail2ban
+  - postgresql-client-14
+
+write_files:
+  - path: /etc/sysctl.d/99-security.conf
+    content: |
+      net.ipv4.conf.all.rp_filter=1
+      net.ipv4.icmp_echo_ignore_broadcasts=1
+
+runcmd:
+  # 1. Install Docker (ARM64 compatible)
+  - curl -fsSL https://get.docker.com -o get-docker.sh
+  - sh get-docker.sh
+  - usermod -aG docker ubuntu
+  
+  # 2. Firewall Configuration (UFW)
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp  # SSH
+  - ufw allow 443/tcp # HTTPS (Telegram Webhooks)
+  - ufw --force enable
+  
+  # 3. Timezone (Critical for IST Trading)
+  - timedatectl set-timezone Asia/Kolkata
