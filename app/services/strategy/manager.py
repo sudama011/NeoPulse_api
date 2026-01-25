@@ -13,6 +13,9 @@ from app.models.market_data import InstrumentMaster
 from app.adapters.telegram_client import telegram_client
 from app.services.oms.executor import order_executor
 from app.services.strategy.lib.momentum import MomentumStrategy
+from app.services.strategy.lib.gap_fill import GapFillStrategy
+from app.services.strategy.lib.mean_reversion import MeanReversionStrategy
+from app.services.strategy.lib.orb import ORBStrategy
 from app.services.risk.position_sizer import CapitalManager
 from app.core.executors import run_blocking
 from app.core.circuit_breaker import positions_circuit_breaker, limits_circuit_breaker
@@ -41,6 +44,9 @@ class StrategyManager:
     # Supported strategies registry
     STRATEGY_MAP: Dict[str, Type] = {
         "MOMENTUM_TREND": MomentumStrategy,
+        "GAP_FILL": GapFillStrategy,
+        "MEAN_REVERSION": MeanReversionStrategy,
+        "OPENING_RANGE_BREAKOUT": ORBStrategy,
     }
 
     def __init__(self):
