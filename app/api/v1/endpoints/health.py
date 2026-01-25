@@ -56,7 +56,7 @@ async def health_check():
             "current_pnl": risk_status["current_pnl"],
             "max_daily_loss": risk_status["max_daily_loss"],
             "loss_utilization": f"{risk_status['loss_percentage']:.1f}%",
-            "trades_taken": risk_status["trades_taken"],
+            "open_positions_count": risk_status["open_positions_count"],
             "max_trades": risk_status["max_concurrent_trades"],
         },
         "queues": {
@@ -159,7 +159,7 @@ async def get_metrics():
             "current_pnl": risk_status["current_pnl"],
             "max_daily_loss": risk_status["max_daily_loss"],
             "loss_utilization_pct": risk_status["loss_percentage"],
-            "trades_executed": risk_status["trades_taken"],
+            "trades_executed": risk_status["open_positions_count"],
             "max_concurrent_trades": risk_status["max_concurrent_trades"],
         },
         "performance": {

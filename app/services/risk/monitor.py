@@ -22,10 +22,11 @@ class RiskMonitor:
         
         # Daily State
         self.current_pnl = 0.0
-        self.trades_taken = 0
+        self.open_positions_count = 0
+        self.daily_trade_count = 0
         
         # ✅ CRITICAL: Async lock for atomicity
-        # Protects: trades_taken, current_pnl reads/writes
+        # Protects: open_positions_count, current_pnl reads/writes
         self._lock = asyncio.Lock()
 
     async def request_trade_slot(self) -> bool:
@@ -46,15 +47,16 @@ class RiskMonitor:
                 return False
                 
             # 2. Check Trade Count
-            if self.trades_taken >= self.max_concurrent_trades:
+            if self.open_positions_count >= self.max_concurrent_trades:
                 logger.warning(
-                    f"🛑 Max Daily Trades Hit: {self.trades_taken}/{self.max_concurrent_trades}"
+                    f"🛑 Max Daily Trades Hit: {self.open_positions_count}/{self.max_concurrent_trades}"
                 )
                 return False
                 
             # 3. Increment (Reserve Slot) - NOW ATOMIC
-            self.trades_taken += 1
-            logger.debug(f"✅ Trade slot reserved: {self.trades_taken}/{self.max_concurrent_trades}")
+            self.open_positions_count += 1
+            self.daily_trade_count += 1
+            logger.debug(f"✅ Trade slot reserved: {self.open_positions_count}/{self.max_concurrent_trades}")
             return True
 
     async def rollback_trade_slot(self) -> None:
@@ -65,8 +67,9 @@ class RiskMonitor:
         after request_trade_slot() succeeded.
         """
         async with self._lock:
-            if self.trades_taken > 0:
-                self.trades_taken -= 1
+            if self.open_positions_count > 0:
+                self.open_positions_count -= 1
+                self.daily_trade_count -= 1
                 logger.info("⏪ Trade slot rolled back due to execution failure.")
 
     async def release_trade_slot(self) -> None:
@@ -74,12 +77,12 @@ class RiskMonitor:
         Releases a trade slot after a position is successfully closed.
         
         Call this AFTER a position is closed (e.g., via Take Profit or Stop Loss).
-        This decrements the trades_taken counter to free up a slot for new trades.
+        This decrements the open_positions_count counter to free up a slot for new trades.
         """
         async with self._lock:
-            if self.trades_taken > 0:
-                self.trades_taken -= 1
-                logger.info(f"✅ Trade slot released: {self.trades_taken}/{self.max_concurrent_trades}")
+            if self.open_positions_count > 0:
+                self.open_positions_count -= 1
+                logger.info(f"✅ Trade slot released: {self.open_positions_count}/{self.max_concurrent_trades}")
 
     async def update_pnl(self, realized_pnl: float) -> None:
         """
@@ -95,7 +98,7 @@ class RiskMonitor:
     async def reset_daily_stats(self) -> None:
         """Reset risk monitor for a new trading day."""
         async with self._lock:
-            self.trades_taken = 0
+            self.open_positions_count = 0
             self.current_pnl = 0.0
             logger.info("♻️ Risk Monitor Stats Reset for New Day")
 
@@ -133,7 +136,8 @@ class RiskMonitor:
         async with self._lock:
             return {
                 "current_pnl": self.current_pnl,
-                "trades_taken": self.trades_taken,
+                "open_positions_count": self.open_positions_count,
+                "daily_trade_count": self.daily_trade_count,
                 "max_daily_loss": self.max_daily_loss,
                 "max_concurrent_trades": self.max_concurrent_trades,
                 "loss_percentage": (self.current_pnl / -self.max_daily_loss * 100) 

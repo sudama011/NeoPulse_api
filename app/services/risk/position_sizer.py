@@ -14,12 +14,12 @@ class CapitalManager:
         Risk Amount = Capital * 1%
         Qty = Risk Amount / (Entry - SL)
         """
-        if entry_price <= 0 or stop_loss <= 0 or entry_price <= stop_loss:
+        if entry_price <= 0 or stop_loss <= 0:
             logger.error("Invalid Entry/SL for sizing.")
             return 0
 
         risk_amount = self.total_capital * self.risk_per_trade_pct
-        risk_per_share = entry_price - stop_loss
+        risk_per_share = abs(entry_price - stop_loss)
         
         qty = math.floor(risk_amount / risk_per_share)
         

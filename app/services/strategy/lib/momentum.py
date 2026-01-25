@@ -80,9 +80,9 @@ class MomentumStrategy(BaseStrategy):
                 return
 
         # 3. Calculate Indicators (Thread-safe: heavy pandas operations run in executor)
-        rsi = await run_blocking(calculate_rsi, self.candles, self.rsi_period)
-        vwap = await run_blocking(calculate_vwap, self.candles)
-        ema = await run_blocking(calculate_ema, self.candles, self.ema_period)
+        rsi = await run_blocking(calculate_rsi, list(self.candles), self.rsi_period)
+        vwap = await run_blocking(calculate_vwap, list(self.candles))
+        ema = await run_blocking(calculate_ema, list(self.candles), self.ema_period)
         close = candle['close']
 
         # 4. Entry Logic (Only when FLAT)
