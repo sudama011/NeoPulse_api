@@ -8,7 +8,7 @@ from app.services.risk.monitor import risk_monitor
 from app.db.session import AsyncSessionLocal
 from app.models.orders import OrderLedger
 from datetime import datetime
-from app.core.executors import run_blocking # <--- NEW IMPORT
+from app.core.executors import run_blocking
 
 logger = logging.getLogger("OMS")
 

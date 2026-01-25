@@ -1,9 +1,9 @@
+# app/services/master_data/feed.py
 import asyncio
 import logging
-import json
 from app.adapters.neo_client import neo_client
 from app.core.bus import event_bus
-from app.core.executors import run_blocking # <--- NEW IMPORT
+from app.core.executors import run_blocking
 
 logger = logging.getLogger("LiveFeed")
 

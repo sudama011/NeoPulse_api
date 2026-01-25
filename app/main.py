@@ -63,10 +63,13 @@ async def lifespan(app: FastAPI):
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
-    
+
     # 1. Restore Memory from DB
     await restore_state()
-    
+
+    # 2. ✅ CRITICAL: Sync RiskMonitor with database (prevents restart bug)
+    await risk_monitor.sync_with_database()
+
     logger.info("🛑 Bot is currently STOPPED. Use POST /api/v1/engine/start to launch.")
     
     yield # Application runs here

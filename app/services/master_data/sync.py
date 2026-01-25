@@ -1,4 +1,4 @@
-# app/modules/ingestion/drill.py
+# app/services/master_data/sync.py
 import csv
 import httpx
 import logging
@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import text
 from app.db.session import engine
 from app.adapters.neo_client import neo_client
-from app.core.settings import settings
+from app.core.constants import EXCHANGE_NSE
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ async def run_morning_drill():
     
     # The SDK returns a URL string for the CSV file
     # exchange_segment="nse_cm" (Equity) or "nse_fo" (Derivatives)
-    csv_url_cm = neo_client.client.scrip_master(exchange_segment=settings.EXCHANGE_NSE)
+    csv_url_cm = neo_client.client.scrip_master(exchange_segment=EXCHANGE_NSE)
     
     # Check if SDK returned an error dict or a URL string
     if isinstance(csv_url_cm, dict) and "Error" in csv_url_cm:

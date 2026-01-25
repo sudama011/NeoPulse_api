@@ -1,9 +1,74 @@
 import logging
 import pyotp
+from functools import wraps
 from neo_api_client import NeoAPI
 from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def with_session_validation(max_retries=1):
+    """
+    Decorator that validates session before API calls and auto-relogins on auth failure.
+
+    This prevents the "Authentication Time-Bomb" where session expires after 8-10 hours
+    and all subsequent API calls fail silently.
+
+    Args:
+        max_retries: Number of times to retry after re-login (default: 1)
+
+    Usage:
+        @with_session_validation()
+        def get_positions(self, segment="nse_cm"):
+            return self.client.positions(segment=segment)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            attempts = 0
+            last_error = None
+
+            while attempts <= max_retries:
+                try:
+                    # Attempt the API call
+                    return func(self, *args, **kwargs)
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    last_error = e
+
+                    # Check if it's an authentication error
+                    # Kotak Neo API returns various auth error messages
+                    is_auth_error = any(keyword in error_str for keyword in [
+                        'unauthorized', 'invalid session', 'session expired',
+                        'authentication failed', 'invalid token', '401',
+                        'not logged in', 'login required'
+                    ])
+
+                    if is_auth_error and attempts < max_retries:
+                        logger.warning(
+                            f"🔑 Session expired detected in {func.__name__}. "
+                            f"Auto-relogin attempt {attempts + 1}/{max_retries}..."
+                        )
+
+                        # Force re-login
+                        self.is_logged_in = False
+                        try:
+                            self.login()
+                            attempts += 1
+                            continue  # Retry the API call
+                        except Exception as login_error:
+                            logger.error(f"❌ Re-login failed: {login_error}")
+                            raise login_error
+                    else:
+                        # Not an auth error, or max retries exceeded
+                        raise e
+
+            # If we get here, all retries failed
+            raise last_error
+
+        return wrapper
+    return decorator
 
 class NeoClient:
     _instance = None
@@ -60,54 +125,53 @@ class NeoClient:
             logger.error(f"❌ Login Critical Failure: {e}")
             raise
     
+    @with_session_validation()
     def get_scrip_master(self, segment="nse_cm"):
-        """Wrapper for client.scrip_master"""
+        """Wrapper for client.scrip_master with auto-relogin on session expiry."""
         return self.client.scrip_master(exchange_segment=segment)
 
+    @with_session_validation()
     def subscribe(self, tokens, is_index=False, is_depth=False):
-        """Wrapper for client.subscribe"""
+        """Wrapper for client.subscribe with auto-relogin on session expiry."""
         return self.client.subscribe(
-            instrument_tokens=tokens, 
-            isIndex=is_index, 
+            instrument_tokens=tokens,
+            isIndex=is_index,
             isDepth=is_depth
         )
-    
+
+    @with_session_validation()
     def search(self, segment, symbol):
-        """Wrapper for client.search_scrip"""
+        """Wrapper for client.search_scrip with auto-relogin on session expiry."""
         return self.client.search_scrip(
             exchange_segment=segment,
             symbol=symbol
         )
-    
+
+    @with_session_validation()
     def get_positions(self, segment="nse_cm"):
         """
         Fetches current open positions from the broker.
+        Auto-relogins if session expired.
         Returns a list of dictionaries.
         """
         if not self.is_logged_in:
             self.login()
-            
-        try:
-            # Neo API call to get positions
-            return self.client.positions(segment=segment)
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch positions: {e}")
-            return []
 
+        # Neo API call to get positions
+        return self.client.positions(segment=segment)
+
+    @with_session_validation()
     def get_limits(self, segment="nse_cm"):
         """
         Fetches available funds/margins.
+        Auto-relogins if session expired.
         """
         if not self.is_logged_in:
             self.login()
 
-        try:
-            # Neo API call to get limits
-            # Note: Returns a list of limits for different segments
-            return self.client.limits(segment=segment)
-        except Exception as e:
-            logger.error(f"❌ Failed to fetch limits: {e}")
-            return {}
+        # Neo API call to get limits
+        # Note: Returns a list of limits for different segments
+        return self.client.limits(segment=segment)
 
 # Global Accessor
 neo_client = NeoClient.get_instance()

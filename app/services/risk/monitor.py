@@ -1,6 +1,9 @@
 import logging
 import asyncio
 from typing import Dict, Optional
+from sqlalchemy import select, func
+from app.db.session import AsyncSessionLocal
+from app.models.orders import OrderLedger
 
 logger = logging.getLogger("RiskMonitor")
 
@@ -29,11 +32,55 @@ class RiskMonitor:
         # Protects: open_positions_count, current_pnl reads/writes
         self._lock = asyncio.Lock()
 
+    async def _get_actual_open_positions_count(self) -> int:
+        """
+        Queries the database to get the ACTUAL count of open positions.
+
+        This prevents the "restart bug" where in-memory counter resets to 0
+        but actual positions still exist in the database.
+
+        Returns:
+            int: Number of currently open positions from database
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                # Count distinct tokens with COMPLETE status (filled orders)
+                # We need to calculate net position per token
+                # A position is "open" if net quantity != 0
+
+                # Query: Get all COMPLETE orders, group by token, sum quantities
+                query = select(
+                    OrderLedger.token,
+                    func.sum(
+                        func.case(
+                            (OrderLedger.transaction_type == "BUY", OrderLedger.quantity),
+                            else_=-OrderLedger.quantity
+                        )
+                    ).label("net_qty")
+                ).where(
+                    OrderLedger.status == "COMPLETE"
+                ).group_by(OrderLedger.token)
+
+                result = await session.execute(query)
+                positions = result.all()
+
+                # Count positions where net_qty != 0
+                open_count = sum(1 for _, net_qty in positions if net_qty != 0)
+
+                return open_count
+
+        except Exception as e:
+            logger.error(f"❌ Failed to query database for open positions: {e}")
+            # Fallback to in-memory counter if DB query fails
+            return self.open_positions_count
+
     async def request_trade_slot(self) -> bool:
         """
         Atomically checks limits and reserves a trade slot.
         MUST be called BEFORE placing an order.
-        
+
+        ✅ CRITICAL FIX: Now verifies against DATABASE to prevent restart bug.
+
         Returns:
             bool: True if trade slot was reserved, False if limits breached
         """
@@ -45,15 +92,27 @@ class RiskMonitor:
                     f"<= -{self.max_daily_loss:.2f}"
                 )
                 return False
-                
-            # 2. Check Trade Count
+
+            # 2. ✅ CRITICAL: Verify actual open positions from DATABASE
+            actual_open_count = await self._get_actual_open_positions_count()
+
+            # Sync in-memory counter with database reality
+            if actual_open_count != self.open_positions_count:
+                logger.warning(
+                    f"⚠️ Position count mismatch detected! "
+                    f"Memory: {self.open_positions_count}, Database: {actual_open_count}. "
+                    f"Syncing to database value..."
+                )
+                self.open_positions_count = actual_open_count
+
+            # 3. Check Trade Count (using synced value)
             if self.open_positions_count >= self.max_concurrent_trades:
                 logger.warning(
-                    f"🛑 Max Daily Trades Hit: {self.open_positions_count}/{self.max_concurrent_trades}"
+                    f"🛑 Max Concurrent Trades Hit: {self.open_positions_count}/{self.max_concurrent_trades}"
                 )
                 return False
-                
-            # 3. Increment (Reserve Slot) - NOW ATOMIC
+
+            # 4. Increment (Reserve Slot) - NOW ATOMIC AND DB-VERIFIED
             self.open_positions_count += 1
             self.daily_trade_count += 1
             logger.debug(f"✅ Trade slot reserved: {self.open_positions_count}/{self.max_concurrent_trades}")
@@ -96,11 +155,41 @@ class RiskMonitor:
             logger.debug(f"💹 PnL Updated: {self.current_pnl:.2f} (Change: {realized_pnl:+.2f})")
 
     async def reset_daily_stats(self) -> None:
-        """Reset risk monitor for a new trading day."""
+        """
+        Reset risk monitor for a new trading day.
+
+        ✅ CRITICAL FIX: Now syncs with database to get actual open positions.
+        """
         async with self._lock:
-            self.open_positions_count = 0
+            # Sync with database to get actual open positions
+            actual_open_count = await self._get_actual_open_positions_count()
+            self.open_positions_count = actual_open_count
             self.current_pnl = 0.0
-            logger.info("♻️ Risk Monitor Stats Reset for New Day")
+
+            if actual_open_count > 0:
+                logger.warning(
+                    f"♻️ Risk Monitor Reset: Found {actual_open_count} open positions from previous session"
+                )
+            else:
+                logger.info("♻️ Risk Monitor Stats Reset for New Day")
+
+    async def sync_with_database(self) -> None:
+        """
+        Syncs in-memory position count with database reality.
+
+        Should be called on bot startup to recover from crashes.
+        """
+        async with self._lock:
+            actual_open_count = await self._get_actual_open_positions_count()
+
+            if actual_open_count != self.open_positions_count:
+                logger.warning(
+                    f"🔄 Syncing position count: Memory={self.open_positions_count}, "
+                    f"Database={actual_open_count}"
+                )
+                self.open_positions_count = actual_open_count
+            else:
+                logger.info(f"✅ Position count in sync: {self.open_positions_count} open positions")
 
     async def update_config(
         self, 
