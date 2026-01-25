@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.future import select
 from app.db.session import get_session
 from app.models.config import SystemConfig
+from app.models.market_data import InstrumentMaster
 from app.services.strategy.manager import strategy_engine
 from app.services.risk.monitor import risk_monitor
 from app.adapters.telegram_client import telegram_client
@@ -55,24 +56,62 @@ async def start_bot(
     strategy_engine.available_capital = data.capital
     
     # B. Risk
-    risk_monitor.update_config(
+    await risk_monitor.update_config(
         max_daily_loss=data.max_daily_loss,
         max_concurrent_trades=data.max_concurrent_trades,
         risk_params=data.risk_params
     )
 
-    # C. Strategy (Need to fetch tokens for symbols)
-    # NOTE: In a real app, query InstrumentMaster here to get tokens for symbols
-    # For now, we iterate and assume you implement the token lookup
-    valid_symbols = []
+    # C. Strategy - Fetch tokens for symbols from InstrumentMaster
+    symbol_to_token = {}
+    try:
+        stmt = select(
+            InstrumentMaster.trading_symbol, 
+            InstrumentMaster.instrument_token
+        ).where(InstrumentMaster.trading_symbol.in_(data.symbols))
+        result = await session.execute(stmt)
+        
+        for row in result.fetchall():
+            symbol_to_token[row[0]] = str(row[1])
+        
+        # Validate that all requested symbols were found
+        missing_symbols = [s for s in data.symbols if s not in symbol_to_token]
+        if missing_symbols:
+            logger.warning(f"⚠️ Symbols not found in InstrumentMaster: {missing_symbols}")
+            return {
+                "status": "error",
+                "message": f"Symbols not found: {missing_symbols}. Please ensure they exist in the instrument master database."
+            }
+        
+        logger.info(f"✅ Resolved {len(symbol_to_token)} symbols to tokens")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch symbols from InstrumentMaster: {e}")
+        return {
+            "status": "error",
+            "message": f"Database error while fetching instrument tokens: {str(e)}"
+        }
     
-    # Example Token Lookup (You need to implement this helper)
-    # tokens = await get_tokens_for_symbols(data.symbols, session) 
-    
-    # For now, we skip the lookup code to keep this readable.
-    # You MUST map Symbol -> Token here before calling manager.
-    
-    # strategy_engine.configure(data.strategy, valid_symbols, data.strategy_params)
+    # Configure strategy engine with validated symbols and parameters
+    try:
+        await strategy_engine.configure(
+            strategy_name=data.strategy,
+            symbols=data.symbols,
+            params=data.strategy_params
+        )
+        logger.info(f"✅ Strategy engine configured with {len(data.symbols)} symbols")
+    except ValueError as e:
+        logger.error(f"❌ Strategy configuration error: {e}")
+        return {
+            "status": "error",
+            "message": f"Strategy configuration failed: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during strategy configuration: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to configure strategy: {str(e)}"
+        }
 
     # 3. START ENGINE
     background_tasks.add_task(strategy_engine.start)

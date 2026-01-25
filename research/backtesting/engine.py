@@ -4,6 +4,7 @@ import yfinance as yf
 import pandas as pd
 import logging
 import asyncio
+import time
 from datetime import datetime
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -94,11 +95,66 @@ class BacktestService:
             self.strategy.entry_price = 0.0
 
     async def run(self):
+        """
+        Run backtest with retry logic for yfinance rate limiting.
+        Implements exponential backoff for robust data fetching.
+        """
         logger.info(f"📥 Downloading data for {self.symbol} ({self.days} days)...")
-        df = yf.download(tickers=self.symbol, period=f"{self.days}d", interval="1m", progress=False)
         
-        if df.empty:
-            logger.error("❌ No data found!")
+        # Retry logic with exponential backoff
+        max_retries = 5
+        retry_delay = 3  # seconds (longer initial delay for rate limiting)
+        df = None
+        
+        for attempt in range(max_retries):
+            try:
+                df = yf.download(
+                    tickers=self.symbol, 
+                    period=f"{self.days}d", 
+                    interval="1m", 
+                    progress=False,
+                    timeout=30  # Add timeout
+                )
+                
+                if df is not None and not df.empty:
+                    logger.info(f"✅ Successfully downloaded data on attempt {attempt + 1}")
+                    break
+                else:
+                    # Empty dataframe - treat as retriable error
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠️ Download attempt {attempt + 1}: Empty data received")
+                        logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error("❌ No data found after all retries!")
+                        logger.error("💡 Possible solutions:")
+                        logger.error("  1. yfinance is rate-limited - wait 5-10 minutes and try again")
+                        logger.error("  2. Check if symbol is correct: RELIANCE.NS")
+                        logger.error("  3. Use NSE Indian stock codes instead of Yahoo Finance")
+                        return
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"⚠️ Download attempt {attempt + 1} failed: {str(e)[:80]}"
+                    )
+                    logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(
+                        f"❌ Failed to download data after {max_retries} attempts"
+                    )
+                    logger.error(f"Last error: {e}")
+                    logger.error("💡 Suggestions:")
+                    logger.error("  1. Check your internet connection")
+                    logger.error("  2. Wait a few minutes (yfinance rate limiting)")
+                    logger.error("  3. Try a different symbol or data source")
+                    return
+        
+        if df is None or df.empty:
+            logger.error("❌ Failed to retrieve data")
             return
 
         # Flatten Columns Fix

@@ -1,9 +1,11 @@
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional
 from app.services.strategy.base import BaseStrategy
 from app.services.strategy.indicators import calculate_rsi, calculate_vwap, calculate_ema
 from app.services.oms.executor import order_executor
+from app.services.risk.position_sizer import CapitalManager
+from app.core.executors import run_blocking
 
 
 logger = logging.getLogger("MomentumStrategy")
@@ -29,8 +31,11 @@ class MomentumStrategy(BaseStrategy):
     4. COOLING → Waits before re-entry
     """
 
-    def __init__(self, symbol: str, token: str):
-        super().__init__("MOMENTUM_TREND", symbol, token)
+    def __init__(self, symbol: str, token: str, risk_monitor=None, capital_manager: Optional[CapitalManager] = None):
+        super().__init__("MOMENTUM_TREND", symbol, token, risk_monitor)
+        
+        # Capital Management (Position Sizing)
+        self.capital_manager = capital_manager or CapitalManager(total_capital=100000.0, risk_per_trade_pct=0.01)
         
         # Indicator Configuration
         self.rsi_period = 14
@@ -39,7 +44,7 @@ class MomentumStrategy(BaseStrategy):
         # Risk Configuration
         self.stop_loss_pct = 0.0030      # 0.3% Risk
         self.take_profit_pct = 0.0090    # 0.9% Reward
-        self.position_qty = 25           # Qty per trade
+        self.position_qty = 25           # Default qty (will be overridden by capital_manager)
 
         # Cooldown Configuration (Anti-Whipsaw)
         self.cooldown_minutes = 10
@@ -56,7 +61,7 @@ class MomentumStrategy(BaseStrategy):
         Flow:
         1. Check data quality (enough candles for indicators)
         2. Check cooldown (prevent rapid re-entries)
-        3. Calculate indicators
+        3. Calculate indicators (in thread pool to avoid blocking event loop)
         4. Entry logic (only if FLAT)
         5. Exit logic (only if in position)
         """
@@ -74,10 +79,10 @@ class MomentumStrategy(BaseStrategy):
                 # Cooling down - skip signal generation
                 return
 
-        # 3. Calculate Indicators
-        rsi = calculate_rsi(self.candles, self.rsi_period)
-        vwap = calculate_vwap(self.candles)
-        ema = calculate_ema(self.candles, self.ema_period)
+        # 3. Calculate Indicators (Thread-safe: heavy pandas operations run in executor)
+        rsi = await run_blocking(calculate_rsi, self.candles, self.rsi_period)
+        vwap = await run_blocking(calculate_vwap, self.candles)
+        ema = await run_blocking(calculate_ema, self.candles, self.ema_period)
         close = candle['close']
 
         # 4. Entry Logic (Only when FLAT)
@@ -157,12 +162,15 @@ class MomentumStrategy(BaseStrategy):
             exit_reason = f"SL ({pnl_pct*100:.2f}%)"
             await self.execute_trade(side, close)
 
-        # If we exited, start cooldown
+        # If we exited, start cooldown and release trade slot
         if exit_reason:
             self.last_exit_time = current_time
             self.logger.info(
                 f"❄️ Cooldown started for {self.cooldown_minutes} mins ({exit_reason})"
             )
+            # Release the trade slot back to the risk monitor
+            if self.risk_monitor:
+                await self.risk_monitor.release_trade_slot()
 
     async def execute_trade(self, side: str, price: float) -> None:
         """
@@ -172,36 +180,51 @@ class MomentumStrategy(BaseStrategy):
         This is intentional to avoid divergence if order fails.
         
         Flow:
-        1. Send order to broker
-        2. Broker confirms or rejects
-        3. Update internal position only if confirmed
+        1. Calculate position size using CapitalManager
+        2. Send order to broker
+        3. Broker confirms or rejects
+        4. Update internal position only if confirmed
         
         Note: In real implementation, you should use order confirmation
         from on_order_update() callback rather than updating here.
         """
         try:
-            # Send order to broker
+            # 1. Calculate position quantity using stop-loss based position sizing
+            entry_price = price
+            stop_loss = entry_price * (1 - self.stop_loss_pct)
+            position_qty = self.capital_manager.calculate_quantity(entry_price, stop_loss)
+            
+            if position_qty < 1:
+                self.logger.warning(
+                    f"⚠️ Position size calculation returned 0. "
+                    f"Entry: {entry_price:.2f}, SL: {stop_loss:.2f}"
+                )
+                return
+            
+            self.logger.debug(f"📊 Calculated Position Size: {position_qty} shares")
+            
+            # 2. Send order to broker
             response = await order_executor.place_order(
                 self.symbol, 
                 self.token, 
                 side, 
-                self.position_qty, 
+                position_qty, 
                 price=0.0  # Market order
             )
             
-            # Only update state if order was accepted by broker
+            # 3. Only update state if order was accepted by broker
             if response and response.get("status") == "success":
                 if side == "BUY":
                     # Entering LONG or exiting SHORT
-                    self.position = self.position_qty
+                    self.position = position_qty
                     self.entry_price = price
-                    self.logger.info(f"✅ POSITION UPDATED: LONG {self.position_qty} @ {price:.2f}")
+                    self.logger.info(f"✅ POSITION UPDATED: LONG {position_qty} @ {price:.2f}")
                     
                 elif side == "SELL":
                     # Exiting LONG or entering SHORT
-                    self.position = -self.position_qty
+                    self.position = -position_qty
                     self.entry_price = price
-                    self.logger.info(f"✅ POSITION UPDATED: SHORT {self.position_qty} @ {price:.2f}")
+                    self.logger.info(f"✅ POSITION UPDATED: SHORT {position_qty} @ {price:.2f}")
             else:
                 self.logger.error(f"❌ Trade execution failed: {response}")
                 

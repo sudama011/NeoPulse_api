@@ -13,6 +13,7 @@ from app.models.market_data import InstrumentMaster
 from app.adapters.telegram_client import telegram_client
 from app.services.oms.executor import order_executor
 from app.services.strategy.lib.momentum import MomentumStrategy
+from app.services.risk.position_sizer import CapitalManager
 from app.core.executors import run_blocking
 from app.core.circuit_breaker import positions_circuit_breaker, limits_circuit_breaker
 
@@ -48,6 +49,9 @@ class StrategyManager:
         self.available_capital: float = 0.0
         self.exit_time: time = time(15, 15)  # 3:15 PM IST market close
         
+        # ✅ Capital Manager for position sizing
+        self.capital_manager: Optional[CapitalManager] = None
+        
         # ✅ CRITICAL: Lock for thread-safe dict operations
         self._strategies_lock: asyncio.Lock = asyncio.Lock()
 
@@ -79,6 +83,15 @@ class StrategyManager:
             raise ValueError(f"Unknown Strategy: {strategy_name}")
 
         StrategyClass = self.STRATEGY_MAP[strategy_name]
+        
+        # Initialize capital manager for position sizing
+        # Default: 1% risk per trade on available capital
+        risk_per_trade = params.get('risk_per_trade_pct', 0.01)
+        self.capital_manager = CapitalManager(
+            total_capital=self.available_capital,
+            risk_per_trade_pct=risk_per_trade
+        )
+        logger.info(f"✅ CapitalManager initialized: Capital=₹{self.available_capital:,.2f}, Risk={risk_per_trade*100:.1f}%")
         
         # Fetch token mapping from DB
         symbol_map: Dict[str, str] = {}
@@ -127,9 +140,22 @@ class StrategyManager:
         token = str(token)
         if token not in self.strategies:
             try:
-                strategy = strategy_class(symbol=symbol, token=token)
+                # Pass capital_manager to strategies that support it
+                strategy = strategy_class(
+                    symbol=symbol, 
+                    token=token, 
+                    capital_manager=self.capital_manager
+                )
                 self.strategies[token] = strategy
                 logger.info(f"✅ Registered: {strategy.name} for {symbol}")
+            except TypeError:
+                # Fallback for strategies that don't accept capital_manager
+                try:
+                    strategy = strategy_class(symbol=symbol, token=token)
+                    self.strategies[token] = strategy
+                    logger.info(f"✅ Registered: {strategy.name} for {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to register {symbol}: {e}")
             except Exception as e:
                 logger.error(f"❌ Failed to register {symbol}: {e}")
 

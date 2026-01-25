@@ -1,13 +1,18 @@
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.risk.monitor import RiskMonitor
 
 class BaseStrategy(ABC):
-    def __init__(self, name: str, symbol: str, token: str):
+    def __init__(self, name: str, symbol: str, token: str, risk_monitor: Optional['RiskMonitor'] = None):
         self.name = name
         self.symbol = symbol
         self.token = str(token)
         self.logger = logging.getLogger(f"STRAT:{name}")
+        self.risk_monitor = risk_monitor
         
         # Candle Construction
         self.current_candle = None

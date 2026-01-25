@@ -69,6 +69,18 @@ class RiskMonitor:
                 self.trades_taken -= 1
                 logger.info("⏪ Trade slot rolled back due to execution failure.")
 
+    async def release_trade_slot(self) -> None:
+        """
+        Releases a trade slot after a position is successfully closed.
+        
+        Call this AFTER a position is closed (e.g., via Take Profit or Stop Loss).
+        This decrements the trades_taken counter to free up a slot for new trades.
+        """
+        async with self._lock:
+            if self.trades_taken > 0:
+                self.trades_taken -= 1
+                logger.info(f"✅ Trade slot released: {self.trades_taken}/{self.max_concurrent_trades}")
+
     async def update_pnl(self, realized_pnl: float) -> None:
         """
         Atomically updates realized PnL.
