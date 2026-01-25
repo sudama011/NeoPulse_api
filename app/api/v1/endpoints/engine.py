@@ -1,5 +1,4 @@
 from fastapi import APIRouter, BackgroundTasks, Depends
-from pydantic import BaseModel, Field
 from sqlalchemy.future import select
 from app.db.session import get_session
 from app.models.config import SystemConfig
@@ -8,20 +7,10 @@ from app.services.risk.monitor import risk_monitor
 from app.adapters.telegram_client import telegram_client
 from app.adapters.neo_client import neo_client
 import logging
+from app.schemas.requests import StartRequest
 
 logger = logging.getLogger("API_Engine")
 router = APIRouter()
-
-# --- Request Model ---
-class StartRequest(BaseModel):
-    capital: float = Field(..., gt=0, description="Allocated Trading Capital")
-    symbols: list[str] = Field(..., min_length=1, description="List of Trading Symbols")
-    strategy: str = "MOMENTUM_TREND"
-    leverage: float = 1.0
-    max_daily_loss: float = 1000.0
-    max_concurrent_trades: int = 3
-    risk_params: dict = Field(default_factory=dict)
-    strategy_params: dict = Field(default_factory=dict)
 
 @router.post("/start")
 async def start_bot(

@@ -14,6 +14,7 @@ from app.adapters.telegram_client import telegram_client
 from app.services.oms.executor import order_executor
 from app.services.strategy.lib.momentum import MomentumStrategy
 from app.core.executors import run_blocking
+from app.core.circuit_breaker import positions_circuit_breaker, limits_circuit_breaker
 
 logger = logging.getLogger("StrategyEngine")
 IND = pytz.timezone("Asia/Kolkata")
@@ -182,14 +183,18 @@ class StrategyManager:
         - Update internal state accordingly
         
         Uses run_blocking for synchronous broker API calls.
+        Uses circuit breakers to prevent hanging on unavailable broker.
         """
         logger.info("🔄 Reconciling State with Broker...")
 
         # 1. RESTORE CAPITAL
         if not settings.PAPER_TRADING:
             try:
-                # ✅ run_blocking wrapper for sync Neo API
-                limits = await run_blocking(neo_client.get_limits)
+                # ✅ run_blocking wrapper + circuit breaker for sync Neo API
+                limits = await limits_circuit_breaker.call(
+                    run_blocking,
+                    neo_client.get_limits
+                )
                 if limits and isinstance(limits, dict):
                     self.available_capital = float(limits.get("net", 0.0) or limits.get("cash", 0.0))
                     logger.info(f"💰 Live Capital Available: ₹{self.available_capital:,.2f}")
@@ -204,8 +209,11 @@ class StrategyManager:
         # 2. RESTORE POSITIONS
         if not settings.PAPER_TRADING:
             try:
-                # ✅ run_blocking wrapper for sync Neo API
-                positions_resp = await run_blocking(neo_client.get_positions)
+                # ✅ run_blocking wrapper + circuit breaker for sync Neo API
+                positions_resp = await positions_circuit_breaker.call(
+                    run_blocking,
+                    neo_client.get_positions
+                )
                 
                 if positions_resp and "data" in positions_resp:
                     async with self._strategies_lock:

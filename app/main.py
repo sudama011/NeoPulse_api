@@ -3,6 +3,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.future import select
+import asyncio
 
 from app.api.v1.router import api_router
 from app.core.logger import setup_logging
@@ -55,7 +56,10 @@ async def restore_state():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application Lifecycle.
+    Application Lifecycle Management.
+    
+    Startup: Restore bot state from DB
+    Shutdown: Gracefully close all positions with timeout
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
@@ -67,13 +71,30 @@ async def lifespan(app: FastAPI):
     
     yield # Application runs here
     
-    # --- SHUTDOWN ---
-    logger.info("🛑 API Stopping... Killing Strategy Engine.")
-    if strategy_engine.is_running:
-        strategy_engine.is_running = False
-        # Optional: Close DB connections or HTTP sessions here if needed
-        await strategy_engine.square_off_all() 
-    logger.info("✅ Shutdown Complete.")
+    # --- SHUTDOWN (Graceful) ---
+    logger.info("🛑 API Stopping... Initiating graceful shutdown.")
+    
+    try:
+        # Set timeout for graceful shutdown
+        async with asyncio.timeout(10):  # 10 second timeout
+            if strategy_engine.is_running:
+                strategy_engine.is_running = False
+                logger.info("📊 Closing all open positions...")
+                await strategy_engine.square_off_all()
+                
+                # Wait for orders to be processed
+                await asyncio.sleep(1)
+            
+            # Close DB connections
+            from app.db.session import engine
+            await engine.dispose()
+            
+    except asyncio.TimeoutError:
+        logger.critical("❌ Shutdown timeout exceeded! Forcing termination.")
+    except Exception as e:
+        logger.error(f"❌ Error during shutdown: {e}")
+    finally:
+        logger.info("✅ Shutdown Complete.")
 
 # Initialize App
 app = FastAPI(
