@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, time
 import pytz
-from app.modules.strategy.engine import strategy_engine
+from app.services.strategy.manager import strategy_engine
 
 import holidays 
 

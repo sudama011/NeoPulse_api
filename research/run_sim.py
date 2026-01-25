@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 from app.core.logger import setup_logging
 setup_logging()
 
-from app.services.backtest import BacktestService
+from research.backtesting.engine import BacktestService
 
 async def main():
     # Pick a volatile stock for Momentum testing

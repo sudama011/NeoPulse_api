@@ -14,9 +14,9 @@ from app.core.logger import setup_logging
 setup_logging()
 
 # Imports
-from app.modules.ingestion.feed import feed_engine
-from app.modules.strategy.engine import strategy_engine
-from app.modules.strategy.lib.momentum import MomentumStrategy
+from app.services.master_data.feed import feed_engine
+from app.services.strategy.manager import strategy_engine
+from app.services.strategy.lib.momentum import MomentumStrategy
 from app.db.session import engine as db_engine
 from app.models.market_data import InstrumentMaster
 

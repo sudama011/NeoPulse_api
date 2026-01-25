@@ -11,7 +11,6 @@ class KotakClient:
 
     def __init__(self):
         # Initialize the SDK
-        env_mode = 'prod' if settings.ENV.lower() == 'prod' else 'uat'
         
         self.client = NeoAPI(
             consumer_key=settings.NEO_CONSUMER_KEY,

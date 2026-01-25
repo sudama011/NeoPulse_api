@@ -1,8 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import computed_field
-from typing import ClassVar, List
-import datetime
-from zoneinfo import ZoneInfo
 
 class Settings(BaseSettings):
     # --- Project Info ---
@@ -40,30 +37,6 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_TRADES: int = 3
     LEVERAGE_MULTIPLIER: float = 5.0
     MAX_DAILY_LOSS: float = 1000.0
-
-    # --- Constants (Not loaded from .env) ---
-    # We use ClassVar so Pydantic ignores these during .env validation
-    IST: ClassVar[ZoneInfo] = ZoneInfo("Asia/Kolkata")
-    
-    # Market Hours
-    MARKET_OPEN_TIME: ClassVar[datetime.time] = datetime.time(9, 15, 0, tzinfo=IST)
-    MARKET_CLOSE_TIME: ClassVar[datetime.time] = datetime.time(15, 30, 0, tzinfo=IST)
-    SQUARE_OFF_TIME: ClassVar[datetime.time] = datetime.time(15, 10, 0, tzinfo=IST)
-    
-    # Strategy
-    ORB_WINDOW_MINUTES: ClassVar[int] = 15
-
-    # Universe (Phase 1)
-    TARGET_SYMBOLS: List[str] = [
-        "RELIANCE", "HDFCBANK", "INFY", "ICICIBANK", "TCS", 
-        "SBIN", "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK",
-        "ITC", "BAJFINANCE", "MARUTI", "TATASTEEL", "TATAMOTORS"
-    ]
-
-    # Neo API Segments
-    EXCHANGE_NSE: ClassVar[str] = "nse_cm"
-    SEGMENT_EQUITY: ClassVar[str] = "cm"
-    PRODUCT_INTRADAY: ClassVar[str] = "MIS"
 
     # --- Computed Fields ---
     @computed_field

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.modules.strategy.engine import strategy_engine
+from app.services.strategy.manager import strategy_engine
 from app.core.settings import settings
 
 router = APIRouter()

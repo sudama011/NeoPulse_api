@@ -3,14 +3,14 @@ import logging
 from datetime import datetime, time
 import pytz
 
-from app.core.events import event_bus
+from app.core.bus import event_bus
 from app.core.settings import settings
 from app.adapters.kotak.client import kotak_client
 from app.db.session import AsyncSessionLocal
 from app.models.orders import OrderLedger
 from sqlalchemy import select, func
 from app.adapters.telegram.client import telegram_client
-from app.modules.oms.execution import order_executor
+from app.services.oms.executor import order_executor
 
 logger = logging.getLogger("StrategyEngine")
 IND = pytz.timezone("Asia/Kolkata")

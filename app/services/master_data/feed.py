@@ -2,7 +2,7 @@ import asyncio
 import logging
 import json
 from app.adapters.kotak.client import kotak_client
-from app.core.events import event_bus
+from app.core.bus import event_bus
 
 logger = logging.getLogger("LiveFeed")
 

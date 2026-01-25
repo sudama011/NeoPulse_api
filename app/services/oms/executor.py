@@ -3,7 +3,7 @@ import asyncio
 from app.adapters.kotak.client import kotak_client
 from app.core.settings import settings
 from app.adapters.telegram.client import telegram_client 
-from app.utils.limiter import api_limiter
+from app.core.limiter import api_limiter
 
 logger = logging.getLogger("OMS")
 

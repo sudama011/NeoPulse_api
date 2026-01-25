@@ -1,13 +1,20 @@
+import sys
+import os
 import yfinance as yf
 import pandas as pd
 import logging
 import asyncio
 from datetime import datetime
-from app.modules.strategy.lib.momentum import MomentumStrategy
 
-# 1. NEW IMPORT
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+sys.path.insert(0, project_root)
+
+from app.core.logger import setup_logging
+from app.services.strategy.lib.momentum import MomentumStrategy
 from app.adapters.telegram.client import telegram_client 
 
+setup_logging()
 logger = logging.getLogger("Backtester")
 
 class BacktestService:

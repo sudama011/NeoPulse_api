@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from app.api.v1.router import api_router
 from app.core.logger import setup_logging
-from app.utils.scheduler import MarketScheduler
+from app.core.scheduler import MarketScheduler
 
 # Setup Logging
 setup_logging()

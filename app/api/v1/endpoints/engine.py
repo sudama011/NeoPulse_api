@@ -1,6 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
-from app.modules.strategy.engine import strategy_engine
+from app.services.strategy.manager import strategy_engine
 from app.adapters.telegram.client import telegram_client
 
 router = APIRouter()

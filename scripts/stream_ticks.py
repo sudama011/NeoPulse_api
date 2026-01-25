@@ -15,8 +15,8 @@ setup_logging()
 
 from app.db.session import engine as db_engine
 from app.models.market_data import InstrumentMaster
-from app.modules.ingestion.feed import feed_engine
-from app.core.events import event_bus
+from app.services.master_data.feed import feed_engine
+from app.core.bus import event_bus
 
 logger = logging.getLogger("Streamer")
 

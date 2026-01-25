@@ -1,8 +1,8 @@
 import logging
 from datetime import timedelta
-from app.modules.strategy.base import BaseStrategy
-from app.modules.strategy.indicators import calculate_rsi, calculate_vwap, calculate_ema
-from app.modules.oms.execution import order_executor
+from app.services.strategy.base import BaseStrategy
+from app.services.strategy.indicators import calculate_rsi, calculate_vwap, calculate_ema
+from app.services.oms.executor import order_executor
 
 class MomentumStrategy(BaseStrategy):
     def __init__(self, symbol: str, token: str):
