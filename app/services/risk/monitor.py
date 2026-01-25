@@ -4,9 +4,10 @@ from app.core.settings import settings
 logger = logging.getLogger("RiskRules")
 
 class RiskMonitor:
-    def __init__(self, max_daily_loss: float, max_trades_per_day: int):
-        self.max_daily_loss = max_daily_loss
-        self.max_trades = max_trades_per_day
+
+    def __init__(self):
+        self.max_daily_loss = 0.0
+        self.max_concurrent_trades = 1
         
         # Daily State
         self.current_pnl = 0.0
@@ -32,7 +33,15 @@ class RiskMonitor:
         self.current_loss = 0.0
         logger.info("♻️ Risk Monitor Stats Reset for New Day")
 
-risk_monitor = RiskMonitor(
-    max_daily_loss=settings.MAX_DAILY_LOSS, 
-    max_trades_per_day=settings.MAX_CONCURRENT_TRADES
-)
+    def update_config(self, max_daily_loss: float, max_concurrent_trades: int, risk_params: dict = None):
+        """
+        Updates risk limits dynamically from API request.
+        """
+        self.max_daily_loss = max_daily_loss
+        self.max_concurrent_trades = max_concurrent_trades
+        # Handle extra params if needed
+        if risk_params:
+            pass 
+        logger.info(f"🛡️ Risk Config Updated: Max Loss={self.max_daily_loss}, Max Trades={self.max_trades_per_day}")
+
+risk_monitor = RiskMonitor()

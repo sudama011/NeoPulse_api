@@ -5,12 +5,13 @@ import pytz
 
 from app.core.bus import event_bus
 from app.core.settings import settings
-from app.adapters.kotak.client import kotak_client
+from app.adapters.neo_client import neo_client
 from app.db.session import AsyncSessionLocal
 from app.models.orders import OrderLedger
 from sqlalchemy import select, func
-from app.adapters.telegram.client import telegram_client
+from app.adapters.telegram_client import telegram_client
 from app.services.oms.executor import order_executor
+from app.services.strategy.lib.momentum import MomentumStrategy
 
 logger = logging.getLogger("StrategyEngine")
 IND = pytz.timezone("Asia/Kolkata")
@@ -37,6 +38,41 @@ class StrategyManager:
             cls._instance = StrategyManager()
         return cls._instance
 
+    # 1. Define the Map
+    STRATEGY_MAP = {
+        "MOMENTUM_TREND": MomentumStrategy,
+        # "MEAN_REVERSION": MeanReversionStrategy
+    }
+
+    def configure(self, strategy_name: str, symbols: list, params: dict):
+        """
+        Re-initializes the engine with new settings.
+        """
+        if strategy_name not in self.STRATEGY_MAP:
+            raise ValueError(f"Unknown Strategy: {strategy_name}")
+
+        StrategyClass = self.STRATEGY_MAP[strategy_name]
+        
+        # Clear existing strategies to prevent duplicates/zombies
+        self.strategies.clear()
+        logger.info("🧹 Cleared previous strategies.")
+
+        # Register New
+        for symbol in symbols:
+            # We assume 'token' fetching happens elsewhere or we pass map. 
+            # For simplicity, we use a placeholder lookup or user must pass token map.
+            # ideally: token = master_data_service.get_token(symbol)
+            token = "GET_TOKEN_LOGIC_HERE" 
+            
+            # Use the existing add_strategy method
+            self.add_strategy(StrategyClass, symbol, token)
+            
+            # Apply specific params to the instance if needed
+            if token in self.strategies:
+                self.strategies[token].params = params
+
+        logger.info(f"✅ Configured {len(symbols)} tickers with {strategy_name}")
+    
     def add_strategy(self, strategy_class, symbol: str, token: str):
         """
         Registers a new strategy for a specific stock.
@@ -99,7 +135,7 @@ class StrategyManager:
         # 1. RESTORE CAPITAL (Baseline, can be overridden by API)
         if not settings.PAPER_TRADING:
             try:
-                limits = kotak_client.get_limits()
+                limits = neo_client.get_limits()
                 if limits and isinstance(limits, dict):
                     # Adapting to typical Kotak response; specific key might vary ('net', 'cash')
                     self.available_capital = float(
@@ -116,7 +152,7 @@ class StrategyManager:
         if not settings.PAPER_TRADING:
             # --- LIVE MODE: Trust the Broker ---
             try:
-                positions = kotak_client.get_positions()
+                positions = neo_client.get_positions()
                 if positions and "data" in positions:
                     for pos in positions["data"]:
                         token = str(pos.get("instrumentToken"))

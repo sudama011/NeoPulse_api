@@ -6,7 +6,7 @@ import logging
 sys.path.append(os.getcwd())
 
 from app.core.logger import setup_logging
-from app.adapters.kotak.client import kotak_client
+from app.adapters.neo_client import neo_client
 
 # Initialize the logger (Colored/JSON)
 setup_logging()
@@ -17,11 +17,11 @@ def test_connection():
     
     try:
         # 1. Attempt Login
-        kotak_client.login()
+        neo_client.login()
         
         # 2. Test a simple read-only call (Search)
         logger.info("🔍 Searching for 'RELIANCE' to verify session...")
-        res = kotak_client.search(segment="nse_cm", symbol="RELIANCE")
+        res = neo_client.search(segment="nse_cm", symbol="RELIANCE")
         
         if res and len(res) > 0:
              logger.info(f"✅ Success! Found: {res[0]['pTrdSymbol']} (Token: {res[0]['pSymbol']})")

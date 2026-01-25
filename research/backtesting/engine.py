@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 
 from app.core.logger import setup_logging
 from app.services.strategy.lib.momentum import MomentumStrategy
-from app.adapters.telegram.client import telegram_client 
+from app.adapters.telegram_client import telegram_client 
 
 setup_logging()
 logger = logging.getLogger("Backtester")

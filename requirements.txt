@@ -12,3 +12,4 @@ yfinance
 pandas 
 matplotlib
 holidays
+alembic

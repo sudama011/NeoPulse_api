@@ -1,8 +1,8 @@
 import logging
 import asyncio
-from app.adapters.kotak.client import kotak_client
+from app.adapters.neo_client import neo_client
 from app.core.settings import settings
-from app.adapters.telegram.client import telegram_client 
+from app.adapters.telegram_client import telegram_client 
 from app.core.limiter import api_limiter
 from app.services.risk.monitor import risk_monitor
 from app.db.session import AsyncSessionLocal
@@ -78,7 +78,7 @@ class OrderExecutor:
             
             txn_type = "B" if side.upper() == "BUY" else "S"
             
-            response = kotak_client.client.place_order(
+            response = neo_client.client.place_order(
                 exchange_segment="nse_cm",
                 product="MIS",
                 price=str(price) if price > 0 else "0",

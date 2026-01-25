@@ -4,20 +4,17 @@ import os
 import logging
 from sqlalchemy import select
 
-# 1. Fix Path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, project_root)
 
-# 2. Setup Logger
 from app.core.logger import setup_logging
-setup_logging()
-
 from app.db.session import engine as db_engine
 from app.models.market_data import InstrumentMaster
 from app.services.master_data.feed import feed_engine
 from app.core.bus import event_bus
 
+setup_logging()
 logger = logging.getLogger("Streamer")
 
 async def get_test_tokens():

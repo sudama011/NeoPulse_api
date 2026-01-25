@@ -4,16 +4,13 @@ import os
 import logging
 from sqlalchemy import select
 
-# 1. Fix Path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, project_root)
 
-# 2. Setup Logger
 from app.core.logger import setup_logging
 setup_logging()
 
-# Imports
 from app.services.master_data.feed import feed_engine
 from app.services.strategy.manager import strategy_engine
 from app.services.strategy.lib.momentum import MomentumStrategy

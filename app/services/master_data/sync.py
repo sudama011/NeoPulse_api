@@ -6,21 +6,21 @@ import io
 from datetime import datetime
 from sqlalchemy import text
 from app.db.session import engine
-from app.adapters.kotak.client import kotak_client
+from app.adapters.neo_client import neo_client
 from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
 async def run_morning_drill():
     # 1. Ensure we are logged in
-    kotak_client.login()
+    neo_client.login()
     
     # 2. Get the Scrip Master URL from SDK
     logger.info("🌍 Fetching Scrip Master URL...")
     
     # The SDK returns a URL string for the CSV file
     # exchange_segment="nse_cm" (Equity) or "nse_fo" (Derivatives)
-    csv_url_cm = kotak_client.client.scrip_master(exchange_segment=settings.EXCHANGE_NSE)
+    csv_url_cm = neo_client.client.scrip_master(exchange_segment=settings.EXCHANGE_NSE)
     
     # Check if SDK returned an error dict or a URL string
     if isinstance(csv_url_cm, dict) and "Error" in csv_url_cm:

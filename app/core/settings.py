@@ -32,12 +32,6 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: int  # Your User ID (security gate)
 
-    # --- Risk & Capital (The "Two-Bullet" Logic) ---
-    MAX_CAPITAL_ALLOCATION: float = 10000.0
-    MAX_CONCURRENT_TRADES: int = 3
-    LEVERAGE_MULTIPLIER: float = 5.0
-    MAX_DAILY_LOSS: float = 1000.0
-
     # --- Computed Fields ---
     @computed_field
     @property

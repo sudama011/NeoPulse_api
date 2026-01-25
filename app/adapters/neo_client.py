@@ -1,4 +1,3 @@
-# app/adapters/kotak/client.py
 import logging
 import pyotp
 from neo_api_client import NeoAPI
@@ -6,7 +5,7 @@ from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
-class KotakClient:
+class NeoClient:
     _instance = None
 
     def __init__(self):
@@ -22,7 +21,7 @@ class KotakClient:
     def get_instance(cls):
         """Singleton Pattern"""
         if cls._instance is None:
-            cls._instance = KotakClient()
+            cls._instance = NeoClient()
         return cls._instance
 
     def login(self):
@@ -34,9 +33,6 @@ class KotakClient:
 
         try:
             # 1. Generate TOTP
-            if not settings.NEO_TOTP_SEED:
-                raise ValueError("NEO_TOTP_SEED is missing in .env")
-            
             totp_now = pyotp.TOTP(settings.NEO_TOTP_SEED).now()
             logger.info(f"🔐 Generated Internal TOTP: {totp_now}")
 
@@ -114,4 +110,4 @@ class KotakClient:
             return {}
 
 # Global Accessor
-kotak_client = KotakClient.get_instance()
+neo_client = NeoClient.get_instance()

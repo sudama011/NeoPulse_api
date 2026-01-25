@@ -2,7 +2,7 @@ import logging
 import httpx
 from app.core.settings import settings
 
-logger = logging.getLogger("TelegramAdapter")
+logger = logging.getLogger(__name__)
 
 class TelegramClient:
     """

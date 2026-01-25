@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import json
-from app.adapters.kotak.client import kotak_client
+from app.adapters.neo_client import neo_client
 from app.core.bus import event_bus
 
 logger = logging.getLogger("LiveFeed")
@@ -10,7 +10,7 @@ class FeedEngine:
     _instance = None
 
     def __init__(self):
-        self.client = kotak_client.client
+        self.client = neo_client.client
         self.is_running = False
         self._loop = None
         self.active_tokens = [] 
@@ -98,8 +98,8 @@ class FeedEngine:
 
         try:
             logger.info("🔑 Refreshing Session...")
-            kotak_client.is_logged_in = False # Force login
-            kotak_client.login()
+            neo_client.is_logged_in = False # Force login
+            neo_client.login()
             
             logger.info(f"📡 Re-subscribing to {len(self.active_tokens)} tokens...")
             # Re-attach callbacks (SDK sometimes clears them on close)
@@ -112,7 +112,7 @@ class FeedEngine:
                 {"instrument_token": str(t), "exchange_segment": "nse_cm"} 
                 for t in self.active_tokens
             ]
-            kotak_client.subscribe(sub_packet)
+            neo_client.subscribe(sub_packet)
             
         except Exception as e:
             logger.error(f"💥 Reconnect Failed: {e}")
@@ -123,7 +123,7 @@ class FeedEngine:
         self.active_tokens = tokens 
         
         # 1. Login
-        kotak_client.login()
+        neo_client.login()
         
         # 2. Attach Callbacks
         # 🚨 KEY CHANGE: We point on_message to our new Router
@@ -138,7 +138,7 @@ class FeedEngine:
             {"instrument_token": str(t), "exchange_segment": "nse_cm"} 
             for t in tokens
         ]
-        kotak_client.subscribe(sub_packet)
+        neo_client.subscribe(sub_packet)
         self.is_running = True
 
 feed_engine = FeedEngine.get_instance()
