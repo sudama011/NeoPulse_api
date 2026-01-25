@@ -1,22 +1,22 @@
 import asyncio
 import logging
-from datetime import datetime, time
-import pytz
+from datetime import datetime
 from app.services.strategy.manager import strategy_engine
+from app.core.constants import MARKET_OPEN_TIME, MARKET_CLOSE_TIME, IST
+
 
 import holidays 
-
 logger = logging.getLogger("Scheduler")
-IND = pytz.timezone('Asia/Kolkata')
+
 india_holidays = holidays.IN(years=datetime.now().year)
 
 class MarketScheduler:
     def __init__(self):
-        self.market_open = time(9, 15)
-        self.market_close = time(15, 30)
+        self.market_open = MARKET_OPEN_TIME
+        self.market_close = MARKET_CLOSE_TIME
 
     def is_market_open_now(self) -> bool:
-        now = datetime.now(IND)
+        now = datetime.now(IST)
         
         # 1. Check Weekend (Saturday=5, Sunday=6)
         # Note: Need special logic for "Budget Sunday" manual override later

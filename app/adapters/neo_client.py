@@ -2,6 +2,10 @@ import logging
 import pyotp
 from neo_api_client import NeoAPI
 from app.core.settings import settings
+from concurrent.futures import ThreadPoolExecutor
+
+# Create a dedicated thread pool for Broker I/O
+broker_executor = ThreadPoolExecutor(max_workers=5)
 
 logger = logging.getLogger(__name__)
 
