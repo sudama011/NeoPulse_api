@@ -11,6 +11,8 @@ from app.services.strategy.manager import strategy_engine
 from app.services.risk.monitor import risk_monitor
 from app.db.session import AsyncSessionLocal
 from app.models.config import SystemConfig
+from app.risk.manager import risk_manager
+from app.execution.engine import execution_engine
 
 # Setup Logging
 setup_logging()
@@ -63,6 +65,8 @@ async def lifespan(app: FastAPI):
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
+    await execution_engine.initialize()
+    await risk_manager.initialize()
 
     # 1. Restore Memory from DB
     await restore_state()
