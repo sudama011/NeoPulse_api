@@ -4,6 +4,12 @@ from app.adapters.kotak.client import kotak_client
 from app.core.settings import settings
 from app.adapters.telegram.client import telegram_client 
 from app.core.limiter import api_limiter
+from app.services.risk.monitor import RiskMonitor
+
+risk_monitor = RiskMonitor(
+    max_daily_loss=settings.MAX_DAILY_LOSS, 
+    max_trades_per_day=settings.MAX_CONCURRENT_TRADES
+)
 
 logger = logging.getLogger("OMS")
 
@@ -17,7 +23,14 @@ class OrderExecutor:
         return cls._instance
 
     async def place_order(self, symbol: str, token: str, side: str, qty: int, price: float = 0.0):
-        # 🛡️ 1. WAIT FOR PERMISSION (Prevents Ban)
+
+        # We check if we are allowed to trade BEFORE asking the API Limiter
+        if not risk_monitor.can_trade():
+            logger.error(f"🛑 RISK BLOCK: Order rejected for {symbol}")
+            await telegram_client.send_alert(f"🛑 <b>RISK BLOCK</b>\nTrade rejected for {symbol}. Daily limit reached.")
+            return {"status": "error", "message": "Risk Limit Breached"}
+        
+        # 🛡️ 1. RATE LIMITER (Prevents Ban)
         await api_limiter.acquire()
 
         try:
@@ -70,7 +83,9 @@ class OrderExecutor:
                     f"🆔 OrderID: {response.get('nOrdNo', 'Unknown')}"
                 )
                 asyncio.create_task(telegram_client.send_alert(msg))
-
+            
+            risk_monitor.trades_taken += 1
+            
             logger.info(f"✅ Broker Response: {response}")
             return response
 
