@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 sys.path.append(os.getcwd())
-from app.models.base import Base
 from app.core.settings import settings
+from app.models.base import Base
+from app.models.config import SystemConfig
 
 
 # this is the Alembic Config object, which provides

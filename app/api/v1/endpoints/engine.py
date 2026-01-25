@@ -17,11 +17,11 @@ class StartRequest(BaseModel):
     capital: float = Field(..., gt=0, description="Allocated Trading Capital")
     symbols: list[str] = Field(..., min_length=1, description="List of Trading Symbols")
     strategy: str = "MOMENTUM_TREND"
-    strategy_params: dict = {}
     leverage: float = 1.0
     max_daily_loss: float = 1000.0
     max_concurrent_trades: int = 3
-    risk_params: dict = {}
+    risk_params: dict = Field(default_factory=dict)
+    strategy_params: dict = Field(default_factory=dict)
 
 @router.post("/start")
 async def start_bot(
