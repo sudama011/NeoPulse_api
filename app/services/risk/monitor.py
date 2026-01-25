@@ -1,4 +1,5 @@
 import logging
+from app.core.settings import settings
 
 logger = logging.getLogger("RiskRules")
 
@@ -25,3 +26,13 @@ class RiskMonitor:
     def update_pnl(self, realized_pnl):
         self.current_pnl += realized_pnl
         self.trades_taken += 1
+
+    def reset_daily_stats(self):
+        self.trades_taken = 0
+        self.current_loss = 0.0
+        logger.info("♻️ Risk Monitor Stats Reset for New Day")
+
+risk_monitor = RiskMonitor(
+    max_daily_loss=settings.MAX_DAILY_LOSS, 
+    max_trades_per_day=settings.MAX_CONCURRENT_TRADES
+)

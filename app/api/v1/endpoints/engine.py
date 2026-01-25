@@ -47,3 +47,27 @@ async def stop_bot():
     strategy_engine.is_running = False
     await telegram_client.send_alert("🔴 <b>BOT STOPPED MANUALLY</b>")
     return {"status": "success", "message": "Bot stopped."}
+
+@router.get("/status")
+async def get_bot_status():
+    """
+    Returns the heartbeat for the Dashboard.
+    """
+    positions = []
+    
+    # Extract positions from Strategy Engine
+    for token, strat in strategy_engine.strategies.items():
+        if strat.position != 0:
+            positions.append({
+                "symbol": strat.symbol,
+                "qty": strat.position,
+                "ltp": getattr(strat, 'last_price', 0.0),
+                "pnl": getattr(strat, 'current_pnl', 0.0) # Ensure strategy tracks this
+            })
+
+    return {
+        "status": "running" if strategy_engine.is_running else "stopped",
+        "capital_allocated": strategy_engine.available_capital,
+        "open_positions": positions,
+        "active_strategies": list(strategy_engine.strategies.keys())
+    }

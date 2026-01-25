@@ -15,6 +15,7 @@ from app.core.settings import settings
 from app.db.session import engine
 from app.adapters.kotak.client import kotak_client
 from app.models.market_data import InstrumentMaster
+from app.services.risk.monitor import risk_monitor
 
 from app.core.logger import setup_logging
 
@@ -60,6 +61,8 @@ async def run_morning_drill():
     except Exception as e:
         logger.error(f"❌ Failed to download CSV: {e}")
         return
+    
+    risk_monitor.reset_daily_stats()
 
     # Step 4: Parse Data
     logger.info("🔄 Parsing CSV Data...")

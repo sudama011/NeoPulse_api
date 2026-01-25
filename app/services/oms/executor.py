@@ -4,12 +4,11 @@ from app.adapters.kotak.client import kotak_client
 from app.core.settings import settings
 from app.adapters.telegram.client import telegram_client 
 from app.core.limiter import api_limiter
-from app.services.risk.monitor import RiskMonitor
+from app.services.risk.monitor import risk_monitor
+from app.db.session import AsyncSessionLocal
+from app.models.orders import OrderLedger
+from datetime import datetime
 
-risk_monitor = RiskMonitor(
-    max_daily_loss=settings.MAX_DAILY_LOSS, 
-    max_trades_per_day=settings.MAX_CONCURRENT_TRADES
-)
 
 logger = logging.getLogger("OMS")
 
@@ -41,6 +40,23 @@ class OrderExecutor:
             # 🛑 PAPER TRADING CHECK
             if settings.PAPER_TRADING:
                 logger.info(f"📝 [PAPER] {side} {qty} {symbol} @ {price or 'MKT'}")
+
+                fake_order_id = f"PAPER-{int(datetime.now().timestamp())}"
+                
+                # 💾 SAVE TO DB (Crucial for Recovery)
+                async with AsyncSessionLocal() as session:
+                    db_order = OrderLedger(
+                        order_id=fake_order_id,
+                        token=token,
+                        symbol=symbol,
+                        transaction_type=side,
+                        quantity=qty,
+                        price=price if price > 0 else 0.0, # Approximate entry price
+                        status="COMPLETE",
+                        timestamp=datetime.now()
+                    )
+                    session.add(db_order)
+                    await session.commit()
                 
                 # Send Alert
                 msg = (
@@ -54,8 +70,7 @@ class OrderExecutor:
                 
                 return {
                     "status": "success", 
-                    "message": "Paper Order Placed", 
-                    "data": {"orderId": "PAPER-123"}
+                    "orderId": fake_order_id
                 }
 
             # 🚀 REAL TRADING
@@ -85,7 +100,7 @@ class OrderExecutor:
                 asyncio.create_task(telegram_client.send_alert(msg))
             
             risk_monitor.trades_taken += 1
-            
+
             logger.info(f"✅ Broker Response: {response}")
             return response
 
