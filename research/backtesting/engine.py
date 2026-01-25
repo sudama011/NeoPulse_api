@@ -19,14 +19,20 @@ setup_logging()
 logger = logging.getLogger("Backtester")
 
 class BacktestService:
-    def __init__(self, symbol: str, days: int = 5):
+    def __init__(self, symbol: str, days: int = 5, strategy_class=None, initial_capital: float = 100000.0, custom_dataframe=None):
         self.symbol = symbol
         self.days = days
-        self.strategy = MomentumStrategy(symbol=symbol, token="BACKTEST")
-        self.initial_capital = 100000.0
+        self.initial_capital = initial_capital
         self.balance = self.initial_capital
+        self.custom_dataframe = custom_dataframe  # For pre-fetched data
         
-        # Override Strategy's "Execute" method
+        # Use provided strategy class or default to Momentum
+        if strategy_class is None:
+            strategy_class = MomentumStrategy
+        
+        self.strategy = strategy_class(symbol=symbol, token="BACKTEST")
+        
+        # Override Strategy's "Execute" method for backtesting
         self.strategy.execute_trade = self.mock_execution
 
         self.trades = []
@@ -34,7 +40,22 @@ class BacktestService:
         self.entry_price = 0.0
 
     async def mock_execution(self, side, price):
-        qty = 25 
+        """Mock trade execution for backtesting."""
+        # Use dynamic position sizing if capital manager is available
+        if hasattr(self.strategy, 'capital_manager') and self.strategy.capital_manager:
+            entry_price = price
+            if side == "BUY":
+                stop_loss = entry_price * (1 - self.strategy.stop_loss_pct)
+            else:
+                stop_loss = entry_price * (1 + self.strategy.stop_loss_pct)
+            
+            qty = self.strategy.capital_manager.calculate_quantity(entry_price, stop_loss)
+            if qty < 1:
+                logger.warning(f"⚠️ Position size too small: {qty}")
+                return
+        else:
+            qty = 25  # Fallback
+        
         timestamp = self.strategy.current_candle['start_time'] if self.strategy.current_candle else datetime.now()
 
         # 1. OPEN NEW POSITION
@@ -94,68 +115,75 @@ class BacktestService:
             self.strategy.position = 0
             self.strategy.entry_price = 0.0
 
-    async def run(self):
+    async def run(self, use_provided_data: bool = False):
         """
-        Run backtest with retry logic for yfinance rate limiting.
-        Implements exponential backoff for robust data fetching.
+        Run backtest with real yfinance data or provided dataframe.
+        
+        Args:
+            use_provided_data: If True, uses self.custom_dataframe instead of downloading
         """
-        logger.info(f"📥 Downloading data for {self.symbol} ({self.days} days)...")
-        
-        # Retry logic with exponential backoff
-        max_retries = 5
-        retry_delay = 3  # seconds (longer initial delay for rate limiting)
-        df = None
-        
-        for attempt in range(max_retries):
-            try:
-                df = yf.download(
-                    tickers=self.symbol, 
-                    period=f"{self.days}d", 
-                    interval="1m", 
-                    progress=False,
-                    timeout=30  # Add timeout
-                )
-                
-                if df is not None and not df.empty:
-                    logger.info(f"✅ Successfully downloaded data on attempt {attempt + 1}")
-                    break
-                else:
-                    # Empty dataframe - treat as retriable error
+        # Get data source
+        if use_provided_data and self.custom_dataframe is not None:
+            df = self.custom_dataframe
+            logger.info(f"📊 Using provided data with {len(df)} candles")
+        else:
+            logger.info(f"📥 Downloading real market data for {self.symbol} ({self.days} days)...")
+            
+            # Retry logic with exponential backoff
+            max_retries = 5
+            retry_delay = 3  # seconds
+            df = None
+            
+            for attempt in range(max_retries):
+                try:
+                    df = yf.download(
+                        tickers=self.symbol, 
+                        period=f"{self.days}d", 
+                        interval="1m", 
+                        progress=False,
+                        timeout=30
+                    )
+                    
+                    if df is not None and not df.empty:
+                        logger.info(f"✅ Successfully downloaded {len(df)} candles on attempt {attempt + 1}")
+                        break
+                    else:
+                        # Empty dataframe - treat as retriable error
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ Download attempt {attempt + 1}: Empty data received")
+                            logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            logger.error("❌ No data found after all retries!")
+                            logger.error("💡 Possible solutions:")
+                            logger.error("  1. yfinance is rate-limited - wait 5-10 minutes and try again")
+                            logger.error("  2. Check if symbol is correct: RELIANCE.NS")
+                            logger.error("  3. Use NSE Indian stock codes")
+                            return
+                    
+                except Exception as e:
                     if attempt < max_retries - 1:
-                        logger.warning(f"⚠️ Download attempt {attempt + 1}: Empty data received")
+                        logger.warning(
+                            f"⚠️ Download attempt {attempt + 1} failed: {str(e)[:80]}"
+                        )
                         logger.info(f"🔄 Retrying in {retry_delay} seconds...")
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
                     else:
-                        logger.error("❌ No data found after all retries!")
-                        logger.error("💡 Possible solutions:")
-                        logger.error("  1. yfinance is rate-limited - wait 5-10 minutes and try again")
-                        logger.error("  2. Check if symbol is correct: RELIANCE.NS")
-                        logger.error("  3. Use NSE Indian stock codes instead of Yahoo Finance")
+                        logger.error(
+                            f"❌ Failed to download data after {max_retries} attempts"
+                        )
+                        logger.error(f"Last error: {e}")
+                        logger.error("💡 Suggestions:")
+                        logger.error("  1. Check your internet connection")
+                        logger.error("  2. Wait a few minutes (yfinance rate limiting)")
+                        logger.error("  3. Try a different symbol or data source")
                         return
-                
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"⚠️ Download attempt {attempt + 1} failed: {str(e)[:80]}"
-                    )
-                    logger.info(f"🔄 Retrying in {retry_delay} seconds...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(
-                        f"❌ Failed to download data after {max_retries} attempts"
-                    )
-                    logger.error(f"Last error: {e}")
-                    logger.error("💡 Suggestions:")
-                    logger.error("  1. Check your internet connection")
-                    logger.error("  2. Wait a few minutes (yfinance rate limiting)")
-                    logger.error("  3. Try a different symbol or data source")
-                    return
-        
-        if df is None or df.empty:
-            logger.error("❌ Failed to retrieve data")
-            return
+            
+            if df is None or df.empty:
+                logger.error("❌ Failed to retrieve data")
+                return
 
         # Flatten Columns Fix
         if isinstance(df.columns, pd.MultiIndex):
