@@ -24,7 +24,7 @@ class OrderExecutor:
     async def place_order(self, symbol: str, token: str, side: str, qty: int, price: float = 0.0):
 
         # 🛡️ 1. ATOMIC RISK CHECK
-        if not risk_monitor.request_trade_slot():
+        if not await risk_monitor.request_trade_slot():
             logger.error(f"🛑 RISK BLOCK: Order rejected for {symbol}")
             await telegram_client.send_alert(f"🛑 <b>RISK BLOCK</b>\nTrade rejected for {symbol}. Daily limit reached.")
             return {"status": "error", "message": "Risk Limit Breached"}
@@ -94,7 +94,7 @@ class OrderExecutor:
 
         except Exception as e:
             logger.error(f"❌ Execution Failed: {e}")
-            risk_monitor.rollback_trade_slot()
+            await risk_monitor.rollback_trade_slot()
             asyncio.create_task(telegram_client.send_alert(f"⚠️ <b>ORDER FAILED:</b> {e}"))
             return None
 
