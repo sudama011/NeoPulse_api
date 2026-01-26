@@ -4,7 +4,7 @@ import math
 from app.core.settings import settings
 from app.execution.kotak import kotak_adapter
 from app.execution.virtual import virtual_broker
-from app.risk.manager import risk_manager
+from app.risk.manager import RiskManager, RiskConfig, PositionConfig
 
 logger = logging.getLogger("ExecutionEngine")
 
@@ -18,8 +18,8 @@ class ExecutionEngine:
     3. Risk: Pre-trade checks
     4. Resilience: Retries and Error Handling
     """
-    def __init__(self):
-
+    def __init__(self, risk_manager: RiskManager):
+        self.risk_manager = risk_manager
         # Route based on config
         self.broker = virtual_broker if settings.PAPER_TRADING else kotak_adapter
         
@@ -46,7 +46,7 @@ class ExecutionEngine:
         Handles Slicing (Iceberg) and Risk checks automatically.
         """
         # 1. RISK CHECK (Atomic)
-        if not await risk_manager.can_trade(symbol, quantity, price):
+        if not await self.risk_manager.can_trade(symbol, quantity, price):
             logger.warning(f"🛑 Order Blocked by Risk Sentinel: {symbol} {side}")
             return None
 
@@ -80,12 +80,12 @@ class ExecutionEngine:
             else:
                 logger.error(f"❌ Order Rejected: {response.get('errMsg')}")
                 # Rollback risk slot on rejection
-                await risk_manager.on_execution_failure()
+                await self.risk_manager.on_execution_failure()
                 return None
 
         except Exception as e:
             logger.error(f"🔥 Execution Exception: {e}")
-            await risk_manager.on_execution_failure()
+            await self.risk_manager.on_execution_failure()
             return None
 
     async def _execute_iceberg(self, symbol, token, side, total_qty, price):
@@ -113,5 +113,17 @@ class ExecutionEngine:
 
         return responses
 
+risk_manager = RiskManager(
+    risk_config= RiskConfig(
+        max_daily_loss=2000.0,
+        max_capital_per_trade=50000.0,
+        max_open_trades=3
+    ),
+    pos_config= PositionConfig(
+        method="FIXED_RISK",
+        risk_per_trade_pct=0.01 # 1% Risk
+    )
+)
+
 # Global Accessor
-execution_engine = ExecutionEngine()
+execution_engine = ExecutionEngine(risk_manager=risk_manager)

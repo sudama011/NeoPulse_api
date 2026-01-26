@@ -4,7 +4,7 @@ from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.models.market_data import InstrumentMaster
 from app.core.bus import event_bus
-from app.risk.manager import risk_manager
+from app.risk.manager import RiskManager, RiskConfig, PositionConfig
 from app.execution.engine import execution_engine
 
 from app.strategy.strategies import (
@@ -33,19 +33,31 @@ class StrategyEngine:
 
         # 1. Resolve Tokens
         token_map = await self._resolve_tokens(target_symbols)
+        risk_manager = RiskManager(
+            risk_config=RiskConfig(
+                max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3
+            ),
+            pos_config=PositionConfig(
+                method="FIXED_RISK", risk_per_trade_pct=0.01  # 1% Risk
+            ),
+        )
 
         # 2. Initialize Strategies
         for symbol, token in token_map.items():
             if strat_name == "GENERIC":
-                s = GenericStrategy(symbol, token, config.get("rules", {}))
+                s = GenericStrategy(
+                    symbol, token, risk_manager, config.get("rules", {})
+                )
             elif strat_name == "MOMENTUM":
-                s = MomentumStrategy(symbol, token)
+                s = MomentumStrategy(symbol, token, risk_manager)
             elif strat_name == "ORB":
                 s = ORBStrategy(symbol, token)
             elif strat_name == "MEAN_REVERSION":
-                s = MeanReversionStrategy(symbol, token)
+                s = MeanReversionStrategy(symbol, token, risk_manager)
             elif strat_name == "RULE_ENGINE":
-                s = RuleBasedStrategy(symbol, token, config.get("rules", {}))
+                s = RuleBasedStrategy(
+                    symbol, token, risk_manager, config.get("rules", {})
+                )
             else:
                 logger.error(f"Unknown Strategy: {strat_name}")
                 continue

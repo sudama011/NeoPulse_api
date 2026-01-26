@@ -1,5 +1,5 @@
 import operator
-from app.strategy.base import BaseStrategy
+from app.strategy.base import BaseStrategy, RiskManager
 from app.strategy.toolbox import Toolbox as T
 
 class GenericStrategy(BaseStrategy):
@@ -22,7 +22,7 @@ class GenericStrategy(BaseStrategy):
         '==': operator.eq
     }
 
-    def __init__(self, symbol: str, token: str, capital_manager, config: dict):
+    def __init__(self, symbol: str, token: str, risk_manager: RiskManager, config: dict):
         """
         config example:
         {
@@ -35,7 +35,7 @@ class GenericStrategy(BaseStrategy):
         }
         """
         name = config.get("name", "GENERIC")
-        super().__init__(name, symbol, token, capital_manager)
+        super().__init__(name, symbol, token, risk_manager)
         self.config = config
 
     async def logic(self, candle: dict):

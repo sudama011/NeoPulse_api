@@ -1,0 +1,71 @@
+# Configuration for the Black code formatter
+[tool.black]
+line-length = 120
+target-version = ['py313']
+
+# Configuration for the isort import sorter
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = "app,tests"
+
+# Configuration for the Flake8 linter
+[tool.flake8]
+max-line-length = 120
+extend-ignore = "E203,W503"
+exclude = ".git,__pycache__,.venv,.mypy_cache,.pytest_cache,dist,build"
+
+per-file-ignores = [
+    "tests/*: F401,F811,F841,E501",
+]
+
+# Configuration for autopep8
+[tool.autopep8]
+max_line_length = 120
+in-place = true
+recursive = true
+aggressive = 1
+
+# Configuration for the Mypy static type checker
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = false
+check_untyped_defs = false
+allow_redefinition = false
+follow_imports = "silent"
+exclude = ["(^tests/fixtures/)|(^build/)|(^dist/)"]
+
+# Configuration for the pytest test runner
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = "tests"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "--color=yes",
+    "--durations=10",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "performance: Performance and load tests",
+    "slow: Slow running tests",
+    "auth: Authentication related tests",
+    "database: Database related tests",
+    "cache: Cache related tests",
+    "api: API endpoint tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::UserWarning",
+]

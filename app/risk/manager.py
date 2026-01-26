@@ -9,28 +9,14 @@ class RiskManager:
     """
     Central Access Point for Risk Module.
     """
-    _instance = None
 
-    def __init__(self):
+    def __init__(self, risk_config: RiskConfig, pos_config: PositionConfig):
         # Default Configs (Should be loaded from DB/Env in production)
-        self.risk_config = RiskConfig(
-            max_daily_loss=2000.0,
-            max_capital_per_trade=50000.0,
-            max_open_trades=3
-        )
-        self.pos_config = PositionConfig(
-            method="FIXED_RISK",
-            risk_per_trade_pct=0.01 # 1% Risk
-        )
+        self.risk_config = risk_config
+        self.pos_config = pos_config
         
         self.sentinel = RiskSentinel(self.risk_config)
         self.sizer = PositionSizer(self.pos_config)
-
-    @classmethod
-    def get_instance(cls):
-        if not cls._instance:
-            cls._instance = RiskManager()
-        return cls._instance
 
     async def initialize(self):
         """Syncs state from DB on startup."""
@@ -51,6 +37,3 @@ class RiskManager:
     async def on_trade_close(self, pnl: float):
         """Proxy to Sentinel Update."""
         await self.sentinel.update_post_trade_close(pnl)
-
-# Global Instance
-risk_manager = RiskManager.get_instance()

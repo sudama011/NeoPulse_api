@@ -2,14 +2,15 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 from app.core.executors import run_blocking
-from app.risk.manager import risk_manager
+from app.risk.manager import RiskManager
 from app.execution.engine import execution_engine
 
 class BaseStrategy(ABC):
-    def __init__(self, name: str, symbol: str, token: str):
+    def __init__(self, name: str, symbol: str, token: str, risk_manager: RiskManager):
         self.name = name
         self.symbol = symbol
         self.token = str(token)
+        self.risk_manager = risk_manager
         self.logger = logging.getLogger(f"Strat:{name}:{symbol}")
         
         # State
@@ -94,7 +95,7 @@ class BaseStrategy(ABC):
         # Opening Position
         elif self.position == 0:
             sl_price = price * 0.995 # Default 0.5% SL for sizing
-            qty = risk_manager.calculate_size(
+            qty = self.risk_manager.calculate_size(
                 capital=100000, # Ideally passed from engine config
                 entry=price, 
                 sl=sl_price
