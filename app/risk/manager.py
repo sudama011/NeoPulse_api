@@ -1,58 +1,110 @@
 import logging
 
-from app.data.master import master_data
-from app.risk.models import PositionConfig, RiskConfig
+from sqlalchemy import select
+
+from app.db.session import AsyncSessionLocal
+from app.execution.kotak import kotak_adapter
+from app.models.config import SystemConfig
 from app.risk.sentinel import RiskSentinel
 from app.risk.sizer import PositionSizer
+from app.schemas.common import RiskConfig
 
 logger = logging.getLogger("RiskManager")
 
 
 class RiskManager:
-    """
-    Central Access Point for Risk Module.
-    Orchestrates Sentinel (Limits) and Sizer (Math).
-    """
+    def __init__(self):
+        # Default safe config until DB loads
+        self.config = RiskConfig(max_daily_loss=1000.0, max_concurrent_trades=3, risk_per_trade_pct=0.01)
 
-    def __init__(self, risk_config: RiskConfig, pos_config: PositionConfig):
-        self.risk_config = risk_config
-        self.pos_config = pos_config
-
-        self.sentinel = RiskSentinel(self.risk_config)
-        self.sizer = PositionSizer(self.pos_config)
+        self.sentinel = RiskSentinel(self.config)
+        self.sizer = PositionSizer()
+        self.is_initialized = False
+        self.leverage = 1.0
+        self.total_allocated_capital = 100000.0
 
     async def initialize(self):
-        """Syncs state from DB on startup."""
-        await self.sentinel.sync_state()
+        """
+        Loads config from DB and syncs with Broker.
+        """
+        logger.info("🛡️ Initializing Risk Manager...")
 
-    def calculate_size(self, symbol: str, capital: float, entry: float, sl: float) -> int:
+        # 1. Load Config from DB
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == "current_state"))
+            db_config = result.scalars().first()
+
+            if db_config:
+                # Apply DB values
+                self.config.max_daily_loss = float(db_config.max_daily_loss) if db_config.max_daily_loss else 1000.0
+                self.config.max_concurrent_trades = db_config.max_concurrent_trades or 3
+
+                # FIX: Load Leverage explicitly
+                self.leverage = float(db_config.leverage) if db_config.leverage else 1.0
+
+                # Apply Sizing config if present in JSONB
+                if db_config.risk_params:
+                    rp = db_config.risk_params
+                    self.config.risk_per_trade_pct = float(rp.get("risk_per_trade_pct", 0.01))
+
+                logger.info(f"✅ Risk Config Loaded: MaxLoss={self.config.max_daily_loss}, Lev={self.leverage}x")
+
+        # 2. Sync State with Broker
+        await self.sentinel.sync_state()
+        self.is_initialized = True
+
+    async def calculate_size(self, symbol: str, entry: float, sl: float, confidence: float = 1.0) -> int:
         """
-        Calculates position size including Lot Size lookup.
+        Smart Sizing wrapper. Fetches live limits and calculates safe quantity.
         """
-        # 1. Fetch Instrument Details
+        from app.data.master import master_data  # Lazy import
+
+        # 1. Get Live Limits from Broker (Actual Money Left)
+        available_cash = 0.0
+        try:
+            if kotak_adapter.is_logged_in:
+                limits = await kotak_adapter.get_limits()
+                available_cash = float(limits.get("net", 0.0))
+            else:
+                available_cash = self.total_allocated_capital
+        except Exception:
+            available_cash = self.total_allocated_capital
+
+        # 2. Get Slot Info
+        # open_slots = Total Allowed - Currently Used
+        open_slots = max(0, self.config.max_concurrent_trades - self.sentinel.open_trades)
+
+        # 3. Get Instrument Data
         inst_data = master_data.get_data(symbol)
         lot_size = inst_data.get("lot_size", 1) if inst_data else 1
 
-        # 2. Calculate
-        return self.sizer.calculate_qty(capital, entry, sl, lot_size=lot_size)
+        # 4. Calculate
+        return self.sizer.calculate_qty(
+            total_capital=self.total_allocated_capital,
+            available_capital=available_cash,
+            max_slots=self.config.max_concurrent_trades,
+            open_slots=open_slots,
+            entry_price=entry,
+            sl_price=sl,
+            lot_size=lot_size,
+            confidence=confidence,
+            risk_per_trade_pct=self.config.risk_per_trade_pct,
+            leverage=self.leverage,
+        )
 
     async def can_trade(self, symbol: str, qty: int, price: float) -> bool:
-        """Proxy to Sentinel."""
+        if not self.is_initialized:
+            logger.warning("⚠️ Risk Manager not initialized! Blocking trade.")
+            return False
         value = qty * price
         return await self.sentinel.check_pre_trade(symbol, qty, value)
 
     async def on_execution_failure(self):
-        """Proxy to Sentinel Rollback."""
-        await self.sentinel.rollback_slot()
+        await self.sentinel.on_execution_failure()
 
     async def on_trade_close(self, pnl: float):
-        """Proxy to Sentinel Update."""
         await self.sentinel.update_post_trade_close(pnl)
 
 
-# Factory/Singleton instance setup
-# (Configuration usually comes from settings/env in a real app)
-risk_manager = RiskManager(
-    risk_config=RiskConfig(max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3),
-    pos_config=PositionConfig(method="FIXED_RISK", risk_per_trade_pct=0.01),
-)
+# Global Instance
+risk_manager = RiskManager()

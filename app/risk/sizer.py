@@ -1,102 +1,73 @@
 import logging
 import math
 
-from app.risk.models import PositionConfig
-
 logger = logging.getLogger("PositionSizer")
 
 
 class PositionSizer:
-    """
-    Calculates the exact quantity to trade.
-    Enforces 'Ruination Risk' protection and Instrument Specifics (Lot Size).
-    """
-
-    def __init__(self, config: PositionConfig):
-        self.config = config
+    def __init__(self):
+        pass
 
     def calculate_qty(
         self,
-        capital: float,
+        total_capital: float,
+        available_capital: float,
+        max_slots: int,
+        open_slots: int,
         entry_price: float,
         sl_price: float,
         lot_size: int = 1,
-        consecutive_losses: int = 0,
-        consecutive_wins: int = 0,
+        confidence: float = 1.0,  # 0.5 to 2.0 multiplier
+        risk_per_trade_pct: float = 0.01,
+        leverage: float = 1.0,
     ) -> int:
         """
-        Determines quantity based on Risk % logic and Lot constraints.
-        Formula: Qty = Floor((Capital * Risk%) / (Entry - SL) / LotSize) * LotSize
+        Calculates quantity based on Risk, Slot Partitioning, and Confidence.
         """
-        if entry_price <= 0 or sl_price <= 0:
-            logger.error("❌ Invalid Entry/SL prices for sizing.")
+        if entry_price <= 0 or sl_price <= 0 or max_slots <= 0:
             return 0
 
-        # Prevent division by zero if bad data passed
-        lot_size = max(1, int(lot_size))
+        # 1. Determine Max Allocation per Slot (The "Fair Share")
+        # Example: 100k capital / 4 slots = 25k per trade base.
+        slot_allocation = total_capital / max_slots
 
-        qty = 0
+        # 2. Apply Confidence Multiplier
+        # If confidence is high (e.g. 1.5), we can go up to 37.5k
+        # But we must leave enough room for at least 50% of remaining slots?
+        # For simplicity: We allow borrowing only if we have >1 open slots.
 
-        if self.config.method == "FIXED_RISK":
-            # 1. Calculate Risk Per Share
-            risk_per_share = abs(entry_price - sl_price)
-            if risk_per_share == 0:
-                logger.warning("⚠️ Entry equals SL! Cannot calculate size.")
-                return 0
+        adjusted_allocation = slot_allocation * confidence
 
-            # 2. Calculate Total Risk Amount
-            risk_amount = capital * self.config.risk_per_trade_pct
+        # Guardrail: Never use more than what's actually available
+        # Also, never hog 100% of available capital if other slots are waiting
+        if open_slots > 1:
+            # If we have spare slots, we can be aggressive, but cap at available
+            max_allowed_cap = min(adjusted_allocation, available_capital)
+        else:
+            # Last slot? Strict limit to whatever is left or the slot size
+            max_allowed_cap = min(slot_allocation, available_capital)
 
-            # 3. Derive Raw Quantity
-            raw_qty = risk_amount / risk_per_share
+        # 3. Calculate Quantity based on Capital Limit
+        qty_by_cap = (max_allowed_cap * leverage) / entry_price
 
-            # 4. Cap by Max Leverage/Capital
-            max_buying_power = capital * self.config.leverage
-            max_qty_by_capital = max_buying_power / entry_price
+        # 4. Calculate Quantity based on Risk Limit (Stop Loss)
+        # Risk Amount = Capital * Risk% (e.g., 1% of Total Capital)
+        risk_amount = total_capital * risk_per_trade_pct
+        risk_per_share = abs(entry_price - sl_price)
 
-            final_raw_qty = min(raw_qty, max_qty_by_capital)
+        if risk_per_share == 0:
+            return 0
 
-            # 5. Apply Lot Size Rounding (Floor)
-            # Example: Raw 63, Lot 25 -> 50 (2 Lots)
-            qty = math.floor(final_raw_qty / lot_size) * lot_size
+        qty_by_risk = risk_amount / risk_per_share
 
-            logger.info(
-                f"🧮 Sizing: Risk ₹{risk_amount:.2f} | Risk/Share ₹{risk_per_share:.2f} | "
-                f"Raw {int(final_raw_qty)} -> Lot Adj {qty} (Lot {lot_size})"
-            )
+        # 5. Final Quantity is the Minimum of both checks
+        raw_qty = min(qty_by_cap, qty_by_risk)
 
-        elif self.config.method == "FIXED_CAPITAL":
-            # Allocation / Price
-            allocation = capital * 0.25
-            raw_qty = allocation / entry_price
+        # 6. Lot Size Adjustment
+        qty = math.floor(raw_qty / lot_size) * lot_size
 
-            # Apply Lot Size
-            qty = math.floor(raw_qty / lot_size) * lot_size
-
-        elif self.config.method == "MARTINGALE":
-            # Start with 1% risk, double for every consecutive loss
-            base_risk_pct = self.config.risk_per_trade_pct
-            multiplier = 2**consecutive_losses  # 1, 2, 4, 8...
-
-            # Cap multiplier to prevent blowing up account (e.g., max 4x)
-            multiplier = min(multiplier, 4)
-
-            risk_amount = capital * base_risk_pct * multiplier
-            risk_per_share = abs(entry_price - sl_price)
-            raw_qty = risk_amount / risk_per_share
-
-            qty = math.floor(raw_qty / lot_size) * lot_size
-
-        elif self.config.method == "ANTI_MARTINGALE":
-            # Increase risk slightly on winning streaks
-            base_risk_pct = self.config.risk_per_trade_pct
-            # Increase risk by 0.5% for every win, cap at 3%
-            bonus_risk = min(consecutive_wins * 0.005, 0.03)
-
-            risk_amount = capital * (base_risk_pct + bonus_risk)
-            risk_per_share = abs(entry_price - sl_price)
-            raw_qty = risk_amount / risk_per_share
-
-            qty = math.floor(raw_qty / lot_size) * lot_size
+        logger.info(
+            f"🧮 Sizing: Cap(₹{max_allowed_cap:.0f}) vs Risk(₹{risk_amount:.0f}) " f"-> Qty {qty} (Conf: {confidence})"
+        )
 
         return int(qty)

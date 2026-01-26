@@ -60,3 +60,16 @@ class OrderRequest(BaseModel):
     last_traded_price: float = Field(default=None, description="Last Traded Price")
     trailing_stop_loss: str = Field(default=None, description="Trailing Stop Loss")
     trailing_sl_value: float = Field(default=None, description="Trailing SL Value")
+
+
+class RiskConfig(BaseModel):
+    """
+    The Constitution: Rules that cannot be broken.
+    """
+
+    max_daily_loss: float = Field(..., description="Stop trading if loss hits this amount")
+    max_concurrent_trades: int = Field(3, description="Max concurrent positions")
+
+    # Advanced Guardrails
+    kill_switch_active: bool = False
+    risk_per_trade_pct: float = Field(0.01, description="Risk 1% of capital per trade")
