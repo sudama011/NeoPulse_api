@@ -11,6 +11,7 @@ from app.data.engine import data_engine
 from app.execution.engine import execution_engine
 from app.risk.manager import risk_manager
 from app.strategy.engine import strategy_engine
+from app.core.executors import global_executor
 
 # Setup Logging
 setup_logging()
@@ -27,6 +28,9 @@ async def lifespan(app: FastAPI):
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
+
+    # 0. Start Thread Pool
+    global_executor.start()
 
     # 1. Start Execution (Connects Broker)
     await execution_engine.initialize()
@@ -59,6 +63,9 @@ async def lifespan(app: FastAPI):
             from app.db.session import engine
 
             await engine.dispose()
+        
+        # STOP Thread Pool (Last thing to stop)
+        global_executor.stop()
 
     except asyncio.TimeoutError:
         logger.critical("❌ Shutdown timeout exceeded! Forcing termination.")

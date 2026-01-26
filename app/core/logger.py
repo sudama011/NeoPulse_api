@@ -1,16 +1,18 @@
+import atexit
 import json
 import logging
+import logging.handlers
 import sys
 from datetime import datetime
+from queue import Queue
 
 from app.core.settings import settings
 
+# Global listener to ensure it stays alive
+_log_listener = None
+
 
 class JSONFormatter(logging.Formatter):
-    """
-    Formats logs as JSON for production monitoring (Datadog/CloudWatch).
-    """
-
     def format(self, record):
         log_obj = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -24,10 +26,6 @@ class JSONFormatter(logging.Formatter):
 
 
 class ColorFormatter(logging.Formatter):
-    """
-    Formats logs with colors for local development.
-    """
-
     grey = "\x1b[38;20m"
     green = "\x1b[32;20m"
     yellow = "\x1b[33;20m"
@@ -52,24 +50,37 @@ class ColorFormatter(logging.Formatter):
 
 def setup_logging():
     """
-    Configures the Root Logger. Call this ONCE at startup (main.py or scripts).
+    Configures Non-Blocking Logging via QueueHandler.
     """
+    global _log_listener
+
     root_logger = logging.getLogger()
     root_logger.setLevel(settings.LOG_LEVEL)
 
-    # Remove default handlers to avoid duplicate logs
     if root_logger.handlers:
         root_logger.handlers = []
 
-    stream_handler = logging.StreamHandler(sys.stdout)
-
+    # 1. The Actual Destination (Blocking)
+    console_handler = logging.StreamHandler(sys.stdout)
     if settings.ENV == "prod":
-        stream_handler.setFormatter(JSONFormatter())
+        console_handler.setFormatter(JSONFormatter())
     else:
-        stream_handler.setFormatter(ColorFormatter())
+        console_handler.setFormatter(ColorFormatter())
 
-    root_logger.addHandler(stream_handler)
+    # 2. The Queue (Buffer)
+    log_queue = Queue(-1)  # Unlimited size
 
-    # Silence noisy libraries
+    # 3. The QueueHandler (Non-Blocking Interface)
+    queue_handler = logging.handlers.QueueHandler(log_queue)
+    root_logger.addHandler(queue_handler)
+
+    # 4. The Listener (Background Thread)
+    _log_listener = logging.handlers.QueueListener(log_queue, console_handler)
+    _log_listener.start()
+
+    # Ensure clean shutdown of logging thread
+    atexit.register(_log_listener.stop)
+
+    # Silence noisy libs
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)

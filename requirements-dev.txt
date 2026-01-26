@@ -10,3 +10,8 @@ autopep8==2.3.2
 yfinance==0.2.64
 
 # --- Test Tools ---
+
+pytest
+pytest-asyncio
+pytest-mock
+pytest-cov
