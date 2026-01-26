@@ -1,12 +1,12 @@
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from app.services.oms.executor import order_executor
-from app.services.risk.position_sizer import CapitalManager
 from app.core.executors import run_blocking
+from app.risk.manager import risk_manager
+from app.execution.engine import execution_engine
 
 class BaseStrategy(ABC):
-    def __init__(self, name: str, symbol: str, token: str, capital_manager: CapitalManager = None):
+    def __init__(self, name: str, symbol: str, token: str):
         self.name = name
         self.symbol = symbol
         self.token = str(token)
@@ -17,7 +17,6 @@ class BaseStrategy(ABC):
         self.entry_price = 0.0
         self.candles = []
         self.current_candle = None
-        self.capital_manager = capital_manager
 
         # Trailing Stop Configuration
         self.trailing_enabled = False
@@ -92,14 +91,18 @@ class BaseStrategy(ABC):
         if (side == "SELL" and self.position > 0) or (side == "BUY" and self.position < 0):
             qty = abs(self.position)
         
-        # Opening Position (Use Capital Manager)
-        elif self.position == 0 and self.capital_manager:
+        # Opening Position
+        elif self.position == 0:
             sl_price = price * 0.995 # Default 0.5% SL for sizing
-            qty = self.capital_manager.calculate_quantity(price, sl_price)
+            qty = risk_manager.calculate_size(
+                capital=100000, # Ideally passed from engine config
+                entry=price, 
+                sl=sl_price
+            )
             if qty < 1: return
 
         if qty > 0:
-            resp = await order_executor.place_order(self.symbol, self.token, side, qty)
+            resp = await execution_engine.execute_order(self.symbol, self.token, side, qty)
             if resp and resp.get('status') == 'success':
                 self.position = qty if side == "BUY" else -qty
                 self.entry_price = price

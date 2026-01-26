@@ -2,8 +2,8 @@ import logging
 import asyncio
 import math
 from app.core.settings import settings
-from app.execution.kotak import KotakNeoAdapter
-from app.execution.virtual import VirtualBrokerAdapter
+from app.execution.kotak import kotak_adapter
+from app.execution.virtual import virtual_broker
 from app.risk.manager import risk_manager
 
 logger = logging.getLogger("ExecutionEngine")
@@ -18,29 +18,19 @@ class ExecutionEngine:
     3. Risk: Pre-trade checks
     4. Resilience: Retries and Error Handling
     """
-    _instance = None
-
     def __init__(self):
-        # Initialize Adapters
-        self.real_broker = KotakNeoAdapter()
-        self.paper_broker = VirtualBrokerAdapter()
-        
+
         # Route based on config
-        self.active_broker = self.paper_broker if settings.PAPER_TRADING else self.real_broker
+        self.broker = virtual_broker if settings.PAPER_TRADING else kotak_adapter
         
         # Iceberg Config
         self.ICEBERG_LIMIT = 1800 # Nifty Freeze Quantity
-
-    @classmethod
-    def get_instance(cls):
-        if not cls._instance: cls._instance = ExecutionEngine()
-        return cls._instance
 
     async def initialize(self):
         """Connects to the active broker."""
         mode = "📝 PAPER" if settings.PAPER_TRADING else "💸 LIVE"
         logger.info(f"🚀 Initializing Execution Engine [{mode}]")
-        await self.active_broker.login()
+        await self.broker.login()
 
     async def execute_order(
         self, 
@@ -82,7 +72,7 @@ class ExecutionEngine:
         }
 
         try:
-            response = await self.active_broker.place_order(params)
+            response = await self.broker.place_order(params)
             
             if response and response.get("stat") == "Ok":
                 logger.info(f"✅ Order Sent: {symbol} {side} {qty} | ID: {response.get('nOrdNo')}")
@@ -124,4 +114,4 @@ class ExecutionEngine:
         return responses
 
 # Global Accessor
-execution_engine = ExecutionEngine.get_instance()
+execution_engine = ExecutionEngine()

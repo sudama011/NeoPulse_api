@@ -53,3 +53,5 @@ class VirtualBrokerAdapter(BrokerAdapter):
 
     async def get_limits(self) -> dict:
         return {"stat": "Ok", "net": self.balance}
+
+virtual_broker = VirtualBrokerAdapter()

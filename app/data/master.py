@@ -3,13 +3,14 @@ import logging
 import pandas as pd
 import io
 import httpx
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from app.db.session import AsyncSessionLocal
 from app.models.market_data import InstrumentMaster
 from app.execution.kotak import kotak_adapter
 from app.core.constants import EXCHANGE_NSE
+from app.core.limiter import kotak_limiter
 
 logger = logging.getLogger("MasterData")
 
@@ -58,7 +59,7 @@ class MasterDataManager:
         """
         1. Gets URL from Kotak SDK.
         2. Downloads CSV via HTTPX.
-        3. Parses & Inserts via Pandas + SQLAlchemy.
+        3. Parses & Inserts via Pandas with Precision Correction.
         """
         logger.info("🌍 Starting Scrip Master Sync...")
 
@@ -89,40 +90,95 @@ class MasterDataManager:
 
             # Read from bytes directly
             df = pd.read_csv(io.BytesIO(csv_content))
+            
+            # --- A. PRECISION CORRECTION ---
+            # Kotak prices (integers) must be divided by 10^lPrecision
+            df['lPrecision'] = pd.to_numeric(df['lPrecision'], errors='coerce').fillna(2)
+            df['divider'] = 10 ** df['lPrecision']
+            
+            # Columns that need division
+            price_cols = ['dHighPriceRange', 'dLowPriceRange', 'dTickSize', 'dStrikePrice']
+            
+            for col in price_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    df[col] = df[col] / df['divider']
 
-            # Rename Columns (Map Kotak headers to DB schema)
-            # Kotak Headers: pScripCode, pTrdSymbol, pSymbol, pLotSize, pTickSize, pExch
-            df = df.rename(
-                columns={
-                    "pScripCode": "instrument_token",
-                    "pTrdSymbol": "trading_symbol",
-                    "pSymbol": "name",
-                    "pLotSize": "lot_size",
-                    "pTickSize": "tick_size",
-                    "pExch": "segment",
-                }
-            )
+            # --- B. DATE PARSING ---
+            # lExpiryDate is usually an epoch integer or -1
+            if 'lExpiryDate' in df.columns:
+                 df['lExpiryDate'] = pd.to_numeric(df['lExpiryDate'], errors='coerce')
+                 # Convert strictly positive timestamps, else None
+                 df['lExpiryDate'] = df['lExpiryDate'].apply(
+                     lambda x: datetime.fromtimestamp(x).date() if x > 0 else None
+                 )
 
-            # Cleanup & Transform
-            df["exchange_token"] = df["name"]
-            df["updated_at"] = datetime.now()
+            # --- C. RENAME COLUMNS (MAPPING) ---
+            df = df.rename(columns={
+                # Identifiers
+                "pSymbol": "instrument_token",        # PK
+                "pTrdSymbol": "trading_symbol",
+                "pSymbolName": "symbol",              # NEW: Search Symbol
+                "pDesc": "name",
+                "pISIN": "isin",
+                
+                # Segment & Type
+                "pExchSeg": "segment",                # nse_cm
+                "pExchange": "exchange",              # NSE
+                "pGroup": "series",                   # EQ, BE
+                "pInstType": "instrument_type",
+                "pOptionType": "option_type",         # CE/PE
+                
+                # Trading Specs
+                "lLotSize": "lot_size",
+                "dTickSize": "tick_size",
+                "lFreezeQty": "freeze_qty",
+                
+                # Price Bands (Renamed per your Model)
+                "dHighPriceRange": "upper_band",      # Updated
+                "dLowPriceRange": "lower_band",       # Updated
+                
+                # Derivatives / Extra
+                "lExpiryDate": "expiry_date",
+                "dStrikePrice": "strike_price"
+            })
 
-            # Numeric conversion
-            df["instrument_token"] = pd.to_numeric(
-                df["instrument_token"], errors="coerce"
-            )
+            # --- D. DEFAULTS & CLEANUP ---
+            df["updated_at"] = pd.Timestamp.now(tz='UTC')
+            
+            # Ensure exchange is set (default NSE if missing)
+            if "exchange" not in df.columns:
+                df["exchange"] = "NSE"
+            else:
+                df["exchange"] = df["exchange"].fillna("NSE")
+
+            # Numeric Safety
+            df["instrument_token"] = pd.to_numeric(df["instrument_token"], errors="coerce")
             df["lot_size"] = pd.to_numeric(df["lot_size"], errors="coerce").fillna(1)
-            df["tick_size"] = pd.to_numeric(df["tick_size"], errors="coerce").fillna(
-                0.05
-            )
-
+            
+            # Drop invalid rows (Must have a Token and Symbol)
             df = df.dropna(subset=["instrument_token", "trading_symbol"])
-
+            
+            # --- E. FILTER VALID COLUMNS ONLY ---
+            # This prevents "column not found" errors in SQLAlchemy
+            valid_cols = [
+                'instrument_token', 'trading_symbol', 'symbol', 'name', 'isin',
+                'exchange', 'segment', 'series', 'instrument_type', 'option_type',
+                'lot_size', 'tick_size', 'freeze_qty', 
+                'upper_band', 'lower_band', 
+                'expiry_date', 'strike_price', 'updated_at'
+            ]
+            
+            # Intersect valid_cols with existing df columns
+            final_cols = [c for c in valid_cols if c in df.columns]
+            df = df[final_cols]
+            
+            df = df.replace({float('nan'): None})
             data_to_insert = df.to_dict(orient="records")
             logger.info(f"📊 Parsed {len(data_to_insert)} records.")
 
         except Exception as e:
-            logger.error(f"❌ Parsing Error: {e}")
+            logger.error(f"❌ Parsing Error: {e}", exc_info=True)
             return
 
         # 5. Bulk Insert
@@ -134,16 +190,13 @@ class MasterDataManager:
                         text("TRUNCATE TABLE instrument_master CASCADE;")
                     )
 
-                    # Batch Insert (5000 rows per batch)
                     chunk_size = 5000
                     for i in range(0, len(data_to_insert), chunk_size):
                         chunk = data_to_insert[i : i + chunk_size]
                         await session.execute(insert(InstrumentMaster), chunk)
 
                     await session.commit()
-                    logger.info(
-                        f"✅ Successfully inserted {len(data_to_insert)} symbols."
-                    )
+                    logger.info(f"✅ Successfully inserted {len(data_to_insert)} symbols.")
                 except Exception as e:
                     await session.rollback()
                     logger.error(f"❌ Database Error: {e}")
@@ -151,6 +204,5 @@ class MasterDataManager:
 
         # 6. Reload Cache
         await self._load_cache()
-
 
 master_data = MasterDataManager()
