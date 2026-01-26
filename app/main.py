@@ -4,58 +4,17 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from sqlalchemy.future import select
 
 from app.api.v1.router import api_router
 from app.core.logger import setup_logging
-from app.db.session import AsyncSessionLocal
 from app.execution.engine import execution_engine
-from app.models.config import SystemConfig
 from app.risk.manager import risk_manager
-from app.services.risk.monitor import risk_monitor
-from app.services.strategy.manager import strategy_engine
+from app.strategy.engine import strategy_engine
+from app.data.engine import data_engine
 
 # Setup Logging
 setup_logging()
 logger = logging.getLogger("API")
-
-
-async def restore_state():
-    """
-    ♻️ CRASH RECOVERY:
-    Reads the last saved configuration from the DB and restores
-    the bot's memory (Capital, Risk Limits, Strategy Params).
-    """
-    try:
-        async with AsyncSessionLocal() as session:
-            # Fetch the 'current_state' key
-            result = await session.execute(select(SystemConfig).where(SystemConfig.key == "current_state"))
-            config = result.scalars().first()
-
-            if config:
-                logger.info("♻️ Found saved state in DB. Restoring...")
-
-                # 1. Restore Capital
-                strategy_engine.available_capital = config.capital
-
-                # 2. Restore Risk Limits
-                risk_monitor.update_config(
-                    max_daily_loss=config.max_daily_loss,
-                    max_concurrent_trades=config.max_concurrent_trades,
-                    risk_params=config.risk_params,
-                )
-
-                # 3. Log Restoration
-                logger.info(
-                    f"✅ State Restored: Strategy={config.strategy_name} | "
-                    f"Capital=₹{config.capital} | "
-                    f"Symbols={len(config.symbols)}"
-                )
-            else:
-                logger.warning("⚠️ No saved state found. Bot starting with Factory Defaults.")
-
-    except Exception as e:
-        logger.error(f"❌ Failed to restore state: {e}")
 
 
 @asynccontextmanager
@@ -68,14 +27,15 @@ async def lifespan(app: FastAPI):
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
+    
+    # 1. Start Execution (Connects Broker)
     await execution_engine.initialize()
+    
+    # 2. Start Data (Loads Tokens, Connects Socket)
+    await data_engine.initialize() 
+    
+    # 3. Start Risk
     await risk_manager.initialize()
-
-    # 1. Restore Memory from DB
-    await restore_state()
-
-    # 2. ✅ CRITICAL: Sync RiskMonitor with database (prevents restart bug)
-    await risk_monitor.sync_with_database()
 
     logger.info("🛑 Bot is currently STOPPED. Use POST /api/v1/engine/start to launch.")
 

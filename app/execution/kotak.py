@@ -8,6 +8,7 @@ from app.core.executors import run_blocking
 from app.core.limiter import kotak_limiter
 from app.core.settings import settings
 from app.execution.core import BrokerAdapter
+from app.notifications.manager import notification_manager
 
 logger = logging.getLogger("KotakAdapter")
 
@@ -65,6 +66,7 @@ class KotakNeoAdapter(BrokerAdapter):
                 transaction_type=order_params.get("transaction_type"),
                 amo="NO",
             )
+            await notification_manager.notify_trade(order_params.get("trading_symbol"), order_params.get("transaction_type"), order_params.get("quantity"), order_params.get("price"), "Strategy")
             return response
         except Exception as e:
             logger.error(f"❌ Broker Order Failed: {e}")

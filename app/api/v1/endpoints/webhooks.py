@@ -1,9 +1,9 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from app.adapters.telegram_client import telegram_client
+from app.notifications.manager import notification_manager
 from app.core.settings import settings
-from app.services.strategy.manager import strategy_engine
+from app.strategy.engine import strategy_engine
 
 router = APIRouter()
 
@@ -37,12 +37,12 @@ async def receive_signal(signal: TradingViewSignal):
             break
 
     if not target_strategy:
-        await telegram_client.send_alert(f"⚠️ <b>IGNORED SIGNAL</b>\nNo active strategy found for {signal.symbol}")
+        await notification_manager.push(f"⚠️ <b>IGNORED SIGNAL</b>\nNo active strategy found for {signal.symbol}")
         return {"status": "ignored", "reason": "Strategy not found"}
 
     # C. Execute Logic
     # We inject the external signal directly into the strategy
-    await telegram_client.send_alert(f"📨 <b>WEBHOOK RECEIVED</b>\n{signal.action} {signal.symbol}")
+    await notification_manager.push(f"📨 <b>WEBHOOK RECEIVED</b>\n{signal.action} {signal.symbol}")
 
     # Trigger the trade manually
     await target_strategy.execute_trade(signal.action.upper(), signal.price)

@@ -3,10 +3,9 @@ from datetime import datetime
 import pytz
 from fastapi import APIRouter
 
-from app.core.bus import event_bus
 from app.core.settings import settings
-from app.services.risk.monitor import risk_monitor
-from app.services.strategy.manager import strategy_engine
+from app.risk.monitor import risk_monitor
+from app.strategy.engine import strategy_engine
 
 router = APIRouter()
 IND = pytz.timezone("Asia/Kolkata")

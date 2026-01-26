@@ -3,14 +3,14 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.future import select
 
-from app.adapters.neo_client import neo_client
-from app.adapters.telegram_client import telegram_client
+from app.execution.kotak import kotak_adapter
+from app.notifications.telegram import telegram_client
 from app.db.session import get_session
 from app.models.config import SystemConfig
 from app.models.market_data import InstrumentMaster
 from app.schemas.requests import StartRequest
-from app.services.risk.monitor import risk_monitor
-from app.services.strategy.manager import strategy_engine
+from app.risk.manager import risk_manager
+from app.strategy.engine import strategy_engine
 
 logger = logging.getLogger("API_Engine")
 router = APIRouter()
@@ -55,7 +55,7 @@ async def start_bot(data: StartRequest, background_tasks: BackgroundTasks, sessi
     strategy_engine.available_capital = data.capital
 
     # B. Risk
-    await risk_monitor.update_config(
+    await risk_manager.update_config(
         max_daily_loss=data.max_daily_loss,
         max_concurrent_trades=data.max_concurrent_trades,
         risk_params=data.risk_params,
