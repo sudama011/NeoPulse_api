@@ -1,86 +1,42 @@
 import logging
-
+from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
-
-from app.services.strategy.manager import strategy_engine
+from app.strategy.engine import strategy_engine
+from app.data.master import master_data
 
 logger = logging.getLogger("RequestSchema")
 
-
 class StartRequest(BaseModel):
-    capital: float = Field(..., gt=0, le=10_000_000, description="Allocated Trading Capital (₹1 to ₹1 Cr)")
-    symbols: list[str] = Field(..., min_length=1, max_length=50, description="List of Trading Symbols")
-    strategy: str = Field(default="MOMENTUM_TREND", description="Strategy name")
-    leverage: float = Field(default=1.0, ge=1.0, le=5.0, description="Leverage factor")
-    max_daily_loss: float = Field(default=1000.0, gt=0, description="Max daily loss in rupees")
-    max_concurrent_trades: int = Field(default=3, ge=1, le=20, description="Max concurrent open trades")
-    risk_params: dict = Field(default_factory=dict, description="Additional risk parameters")
-    strategy_params: dict = Field(default_factory=dict, description="Strategy-specific parameters")
+    capital: float = Field(default=100000.0, gt=0, le=10_000_000, description="Allocated Trading Capital")
+    symbols: list[str] = Field(..., min_length=1, max_length=50)
+    strategy: Literal["GENERIC", "MOMENTUM", "MEAN_REVERSION", "ORB", "RULE_ENGINE"] = "MOMENTUM"
+    leverage: float = Field(default=1.0, ge=1.0, le=5.0)
+    
+    # Risk Limits
+    max_daily_loss: float = Field(default=1000.0, gt=0)
+    max_concurrent_trades: int = Field(default=3, ge=1, le=20)
+    
+    # NEW: Sizing Configuration
+    sizing_method: Literal["FIXED_RISK", "FIXED_CAPITAL", "MARTINGALE", "ANTI_MARTINGALE"] = "FIXED_RISK"
+    risk_per_trade_pct: float = Field(default=0.01, gt=0.0, le=0.10, description="Risk % per trade (0.01 = 1%)")
+
+    # Generic params bags
+    risk_params: dict = Field(default_factory=dict)
+    strategy_params: dict = Field(default_factory=dict)
+
+    @field_validator("max_daily_loss")
+    @classmethod
+    def validate_loss(cls, v: float) -> float:
+        """Validate loss doesn't exceed 10% of capital."""
+        max_allowed_loss = cls.capital * 0.10
+        if v > max_allowed_loss:
+            raise ValueError(f"Max daily loss (₹{v}) cannot exceed 10% of capital " f"(₹{max_allowed_loss:.2f})")
+        return v
 
     @field_validator("symbols")
     @classmethod
     def validate_symbols(cls, v: list[str]) -> list[str]:
-        """Validate trading symbols - basic alphanumeric check."""
-        valid_symbols = {
-            "RELIANCE",
-            "TCS",
-            "INFY",
-            "WIPRO",
-            "BAJAJFINSV",
-            "HINDUNILVR",
-            "ICICIBANK",
-            "SBIN",
-            "LANDT",
-            "AXISBANK",
-            "MARUTI",
-            "ASIANPAINT",
-            "ULTRAMARINE",
-            "BRITANNIA",
-            "NESTLEIND",
-            "DRREDDY",
-            "SUNPHARMA",
-            "CIPLA",
-            "LUPIN",
-            "INDIGO",
-            # Add more as needed
-        }
-
         for symbol in v:
-            if not isinstance(symbol, str):
-                raise ValueError(f"Symbol must be string, got {type(symbol)}")
-            if len(symbol) < 2 or len(symbol) > 20:
-                raise ValueError(f"Symbol '{symbol}' invalid length")
-            if not symbol.replace("&", "").replace("-", "").isalnum():
-                raise ValueError(f"Symbol '{symbol}' contains invalid characters")
-            # Optional: whitelist check (commented out for flexibility)
-            # if symbol not in valid_symbols:
-            #     raise ValueError(f"Symbol '{symbol}' not in supported list")
-
-        return v
-
-    @field_validator("max_daily_loss")
-    @classmethod
-    def validate_loss(cls, v: float, info) -> float:
-        """Validate loss doesn't exceed 20% of capital."""
-        if "capital" in info.data:
-            max_allowed_loss = info.data["capital"] * 0.20
-            if v > max_allowed_loss:
-                raise ValueError(f"Max daily loss (₹{v}) cannot exceed 20% of capital " f"(₹{max_allowed_loss:.2f})")
-        return v
-
-    @field_validator("leverage")
-    @classmethod
-    def validate_leverage(cls, v: float) -> float:
-        """Validate leverage for paper trading."""
-        if v > 2.0:
-            logger.warning(f"⚠️ High leverage requested: {v}x")
-        return v
-
-    @field_validator("strategy")
-    @classmethod
-    def validate_strategy(cls, v: str) -> str:
-        """Validate strategy exists."""
-        valid_strategies = list(strategy_engine.STRATEGY_MAP.keys())
-        if v not in valid_strategies:
-            raise ValueError(f"Strategy '{v}' not found. Available: {valid_strategies}")
+            if not master_data.get_token(symbol):
+                raise ValueError(f"Symbol '{symbol}' not found in master data")
         return v

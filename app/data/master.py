@@ -183,7 +183,7 @@ class MasterDataManager:
 
                     chunk_size = 5000
                     for i in range(0, len(data_to_insert), chunk_size):
-                        await session.execute(insert(InstrumentMaster), data_to_insert[i : i + chunk_size])
+                        await session.execute(insert(InstrumentMaster), data_to_insert[i: i + chunk_size])
 
                     await session.commit()
                     logger.info(f"✅ Synced {len(data_to_insert)} records.")

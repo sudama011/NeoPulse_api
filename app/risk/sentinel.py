@@ -1,6 +1,7 @@
 import asyncio
 import logging
-from sqlalchemy import func, select, case
+
+from sqlalchemy import case, func, select
 
 from app.db.session import AsyncSessionLocal
 from app.models.orders import OrderLedger
@@ -23,7 +24,7 @@ class RiskSentinel:
         self.open_trades = 0
         self.trades_today = 0
         self.peak_equity = 0.0
-        
+
         # Concurrency Control
         self._lock = asyncio.Lock()
 
@@ -40,14 +41,14 @@ class RiskSentinel:
             try:
                 # Lazy import to avoid circular dependency
                 from app.execution.kotak import kotak_adapter
-                
+
                 real_open_positions = 0
-                
+
                 if kotak_adapter.is_logged_in:
-                    # We use 'positions' for Intraday/F&O. 
+                    # We use 'positions' for Intraday/F&O.
                     # 'holdings' is for CNC/Delivery which usually doesn't count towards intraday slot limits.
                     api_response = await kotak_adapter.get_positions()
-                    
+
                     if api_response and "data" in api_response:
                         for pos in api_response["data"]:
                             # Net Quantity != 0 means the position is still open
@@ -55,7 +56,7 @@ class RiskSentinel:
                             if net_qty != 0:
                                 real_open_positions += 1
                                 logger.info(f"🔎 Found Open Position: {pos.get('tradingSymbol')} (Qty: {net_qty})")
-                    
+
                     self.open_trades = real_open_positions
                     logger.info(f"✅ Broker Sync: {self.open_trades} active positions found.")
                 else:
@@ -72,7 +73,7 @@ class RiskSentinel:
                     # (Assuming you have a 'trade_book' or similar, or summing closed order_ledger entries)
                     # For now, we will rely on the previous PnL logic or reset to 0 if new day.
                     # This is a placeholder for your specific PnL query logic.
-                    pass 
+                    pass
 
             except Exception as e:
                 logger.error(f"❌ DB Sync Failed: {e}")

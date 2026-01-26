@@ -57,7 +57,8 @@ async def health_check():
         "risk": {
             "current_pnl": risk_status["current_pnl"],
             "max_daily_loss": risk_status["max_daily_loss"],
-            "loss_utilization": f"{risk_status['loss_percentage']:.1f}%",
+            "loss_utilization": f"{
+                risk_status['loss_percentage']:.1f}%",
             "open_positions_count": risk_status["open_positions_count"],
             "max_trades": risk_status["max_concurrent_trades"],
         },
@@ -65,7 +66,8 @@ async def health_check():
             "tick_queue_usage": tick_usage,
             "tick_queue_size": event_bus_stats["tick_queue_size"],
             "ticks_dropped": event_bus_stats["ticks_dropped"],
-            "order_queue_usage": f"{event_bus_stats['order_queue_size'] / event_bus_stats['order_queue_max'] * 100:.1f}%",
+            "order_queue_usage": f"{
+                event_bus_stats['order_queue_size'] / event_bus_stats['order_queue_max'] * 100:.1f}%",
         },
     }
 

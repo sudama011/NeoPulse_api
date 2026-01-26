@@ -97,17 +97,17 @@ test:
 lint: ## Run all linting checks
 	@echo "$(BLUE)🔍 Running linting checks...$(RESET)"
 	# We ignore E501 (line too long) because strict 79 chars is annoying
-	$(BIN)/flake8 app --ignore=E501
-	$(BIN)/mypy app --ignore-missing-imports
+	$(BIN)/flake8 app backtest tests scripts --ignore=E501
+	$(BIN)/mypy app backtest tests scripts --ignore-missing-imports
 	@echo "$(GREEN)✅ Linting completed$(RESET)"
 
 lint-fix: ## Fix auto-fixable linting issues
 	@echo "$(BLUE)🔧 Fixing linting issues...$(RESET)"
-	$(BIN)/autopep8 --in-place --recursive --aggressive app
+	$(BIN)/autopep8 --in-place --recursive --aggressive app backtest tests scripts
 	@echo "$(GREEN)✅ Auto-fixable issues resolved$(RESET)"
 
 format: ## Format code with black and isort
 	@echo "$(BLUE)🎨 Formatting code...$(RESET)"
-	$(BIN)/black app
-	$(BIN)/isort app
+	$(BIN)/black app backtest tests scripts
+	$(BIN)/isort app backtest tests scripts
 	@echo "$(GREEN)✅ Code formatting completed$(RESET)"

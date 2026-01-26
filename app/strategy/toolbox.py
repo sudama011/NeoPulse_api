@@ -1,5 +1,5 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 
 class Toolbox:
@@ -18,21 +18,21 @@ class Toolbox:
         gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / period, adjust=False).mean()
         loss = -delta.where(delta < 0, 0.0).ewm(alpha=1 / period, adjust=False).mean()
         return float(100 - (100 / (1 + (gain / loss))).iloc[-1])
-    
+
     @staticmethod
     def macd(candles: list, fast=12, slow=26, signal=9):
         """Returns: (macd_line, signal_line, histogram)"""
         if len(candles) < slow + signal:
             return 0.0, 0.0, 0.0
-        
+
         closes = pd.Series([c["close"] for c in candles])
         ema_fast = closes.ewm(span=fast, adjust=False).mean()
         ema_slow = closes.ewm(span=slow, adjust=False).mean()
-        
+
         macd_line = ema_fast - ema_slow
         signal_line = macd_line.ewm(span=signal, adjust=False).mean()
         hist = macd_line - signal_line
-        
+
         return float(macd_line.iloc[-1]), float(signal_line.iloc[-1]), float(hist.iloc[-1])
 
     @staticmethod
@@ -81,38 +81,35 @@ class Toolbox:
         trend = 1 if close > lower.iloc[-1] else -1
         level = lower.iloc[-1] if trend == 1 else upper.iloc[-1]
         return float(level), trend
-    
+
     @staticmethod
     def adx(candles: list, period=14) -> float:
         """Average Directional Index (Trend Strength)"""
         if len(candles) < period * 2:
             return 0.0
-            
+
         df = pd.DataFrame(candles)
-        df['up'] = df['high'].diff()
-        df['down'] = -df['low'].diff()
-        
-        df['tr'] = np.maximum(
-            df['high'] - df['low'], 
-            np.maximum(
-                abs(df['high'] - df['close'].shift(1)), 
-                abs(df['low'] - df['close'].shift(1))
-            )
+        df["up"] = df["high"].diff()
+        df["down"] = -df["low"].diff()
+
+        df["tr"] = np.maximum(
+            df["high"] - df["low"],
+            np.maximum(abs(df["high"] - df["close"].shift(1)), abs(df["low"] - df["close"].shift(1))),
         )
-        
-        df['pdm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0.0)
-        df['ndm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0.0)
-        
-        tr_smooth = df['tr'].rolling(period).sum()
-        pdm_smooth = df['pdm'].rolling(period).sum()
-        ndm_smooth = df['ndm'].rolling(period).sum()
-        
+
+        df["pdm"] = np.where((df["up"] > df["down"]) & (df["up"] > 0), df["up"], 0.0)
+        df["ndm"] = np.where((df["down"] > df["up"]) & (df["down"] > 0), df["down"], 0.0)
+
+        tr_smooth = df["tr"].rolling(period).sum()
+        pdm_smooth = df["pdm"].rolling(period).sum()
+        ndm_smooth = df["ndm"].rolling(period).sum()
+
         pdi = 100 * (pdm_smooth / tr_smooth)
         ndi = 100 * (ndm_smooth / tr_smooth)
-        
+
         dx = 100 * abs(pdi - ndi) / (pdi + ndi)
         adx = dx.rolling(period).mean().iloc[-1]
-        
+
         return float(adx)
 
     # --- PATTERNS ---

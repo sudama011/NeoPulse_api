@@ -3,7 +3,7 @@ import logging
 
 from sqlalchemy import select
 
-from app.core.bus import event_bus
+from app.data.feed import market_feed
 from app.db.session import AsyncSessionLocal
 from app.execution.engine import execution_engine
 from app.models.market_data import InstrumentMaster
@@ -76,7 +76,7 @@ class StrategyEngine:
         """Consumes ticks from EventBus."""
         while self.is_running:
             try:
-                payload = await event_bus.tick_queue.get()
+                payload = await market_feed.tick_queue.get()
                 ticks = payload.get("data", []) if isinstance(payload, dict) else payload
 
                 for tick in ticks:

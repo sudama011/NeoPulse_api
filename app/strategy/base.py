@@ -7,7 +7,8 @@ from app.risk.manager import risk_manager
 
 
 class BaseStrategy(ABC):
-    def __init__(self, name: str, symbol: str, token: str, risk_manager = risk_manager, execution_engine = execution_engine
+    def __init__(
+        self, name: str, symbol: str, token: str, risk_manager=risk_manager, execution_engine=execution_engine
     ):
         self.name = name
         self.symbol = symbol
@@ -104,10 +105,7 @@ class BaseStrategy(ABC):
         # Opening Position
         elif self.position == 0:
             sl_price = price * 0.995  # Default 0.5% SL for sizing
-            qty = self.risk_manager.calculate_size(
-                symbol=self.symbol,
-                capital=100000, entry=price, sl=sl_price
-            )
+            qty = self.risk_manager.calculate_size(symbol=self.symbol, capital=100000, entry=price, sl=sl_price)
             if qty < 1:
                 return
 

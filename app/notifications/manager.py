@@ -1,33 +1,39 @@
-import logging
 import asyncio
+import logging
 from datetime import datetime
+
 from app.notifications.telegram import telegram_client
 
 logger = logging.getLogger("NotificationManager")
+
 
 class NotificationManager:
     """
     Central Alert System.
     Decouples the app from specific channels (Telegram/Email/SMS).
     """
-    
+
     async def push(self, message: str, level: str = "INFO"):
         """
         Sends an alert to all configured channels.
-        
+
         Args:
             message: The text content
             level: INFO, SUCCESS, WARNING, ERROR, CRITICAL
         """
         # 1. Add Emojis based on severity
         icon = "ℹ️"
-        if level == "SUCCESS": icon = "✅"
-        elif level == "WARNING": icon = "⚠️"
-        elif level == "ERROR": icon = "❌"
-        elif level == "CRITICAL": icon = "🚨"
-        
+        if level == "SUCCESS":
+            icon = "✅"
+        elif level == "WARNING":
+            icon = "⚠️"
+        elif level == "ERROR":
+            icon = "❌"
+        elif level == "CRITICAL":
+            icon = "🚨"
+
         formatted_msg = f"{icon} <b>[{level}]</b>\n{message}"
-        
+
         # 2. Log Locally
         if level in ["ERROR", "CRITICAL"]:
             logger.error(message)
@@ -47,6 +53,7 @@ class NotificationManager:
             f"<b>Time:</b> {datetime.now().strftime('%H:%M:%S')}"
         )
         await self.push(msg, level="SUCCESS")
+
 
 # Global Accessor
 notification_manager = NotificationManager()

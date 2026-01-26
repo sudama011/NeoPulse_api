@@ -7,10 +7,10 @@ from fastapi import FastAPI
 
 from app.api.v1.router import api_router
 from app.core.logger import setup_logging
+from app.data.engine import data_engine
 from app.execution.engine import execution_engine
 from app.risk.manager import risk_manager
 from app.strategy.engine import strategy_engine
-from app.data.engine import data_engine
 
 # Setup Logging
 setup_logging()
@@ -27,13 +27,13 @@ async def lifespan(app: FastAPI):
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
-    
+
     # 1. Start Execution (Connects Broker)
     await execution_engine.initialize()
-    
+
     # 2. Start Data (Loads Tokens, Connects Socket)
-    await data_engine.initialize() 
-    
+    await data_engine.initialize()
+
     # 3. Start Risk
     await risk_manager.initialize()
 

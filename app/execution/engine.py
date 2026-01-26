@@ -3,10 +3,10 @@ import logging
 import math
 
 from app.core.settings import settings
+from app.data.master import master_data
 from app.execution.kotak import kotak_adapter
 from app.execution.virtual import virtual_broker
 from app.risk.manager import risk_manager
-from app.data.master import master_data
 
 logger = logging.getLogger("ExecutionEngine")
 
@@ -49,7 +49,7 @@ class ExecutionEngine:
         inst_data = self.master_data.get_data(symbol)
         freeze_qty = 1800
         if inst_data:
-            freeze_qty = inst_data.get('freeze_qty', 1800)
+            freeze_qty = inst_data.get("freeze_qty", 1800)
 
         # 3. ICEBERG LOGIC
         if quantity > freeze_qty:
@@ -113,6 +113,7 @@ class ExecutionEngine:
             await asyncio.sleep(0.2)
 
         return responses
+
 
 # Global Accessor
 execution_engine = ExecutionEngine()

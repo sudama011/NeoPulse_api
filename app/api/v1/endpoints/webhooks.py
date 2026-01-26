@@ -1,8 +1,8 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from app.notifications.manager import notification_manager
 from app.core.settings import settings
+from app.notifications.manager import notification_manager
 from app.strategy.engine import strategy_engine
 
 router = APIRouter()
