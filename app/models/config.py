@@ -27,6 +27,3 @@ class SystemConfig(Base):
     risk_params = Column(JSON)
 
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
-# Add this to app/db/base.py imports so Alembic/InitDB sees it!

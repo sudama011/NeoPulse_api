@@ -78,6 +78,12 @@ class KotakNeoAdapter(BrokerAdapter):
 
     async def get_limits(self) -> dict:
         return await run_blocking(self.client.limits)
+    
+    async def get_holdings(self) -> dict:
+        return await run_blocking(self.client.holdings)
+    
+    async def modify_order(self, order_id: str, price: float, order_type: str, quantity: int, validity = "DAY") -> dict:
+        return await run_blocking(self.client.modify_order, order_id, price, order_type, quantity, validity) 
 
 
 kotak_adapter = KotakNeoAdapter()

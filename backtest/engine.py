@@ -29,9 +29,9 @@ class BacktestEngine:
         
         # Strategy Factory
         if strategy_name == "MOMENTUM":
-            self.strategy = MomentumStrategy(symbol, "BT_TOKEN", None)
+            self.strategy = MomentumStrategy(symbol, "BT_TOKEN")
         elif strategy_name == "ORB":
-            self.strategy = ORBStrategy(symbol, "BT_TOKEN", None)
+            self.strategy = ORBStrategy(symbol, "BT_TOKEN")
         else:
             raise ValueError("Unknown Strategy")
 
@@ -71,7 +71,7 @@ class BacktestEngine:
         report = analyst.generate_report()
         
         # 5. Restore Execution Engine
-        execution_engine.active_broker = original_broker
+        execution_engine.broker = original_broker
         
         return report
 

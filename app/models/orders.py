@@ -11,7 +11,7 @@ class OrderLedger(Base):
     internal_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     exchange_id = Column(String(50), index=True, nullable=True)
 
-    token = Column(Integer, ForeignKey("instrument_master.instrument_token"), nullable=False)
+    token = Column(Integer, ForeignKey("instrument_master.token"), nullable=False)
 
     transaction_type = Column(String(4))  # BUY / SELL
     order_type = Column(String(10))  # L, MKT, SL, SL-M

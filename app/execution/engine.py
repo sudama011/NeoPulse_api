@@ -5,7 +5,8 @@ import math
 from app.core.settings import settings
 from app.execution.kotak import kotak_adapter
 from app.execution.virtual import virtual_broker
-from app.risk.manager import PositionConfig, RiskConfig, RiskManager
+from app.risk.manager import risk_manager
+from app.data.master import master_data
 
 logger = logging.getLogger("ExecutionEngine")
 
@@ -21,13 +22,10 @@ class ExecutionEngine:
     4. Resilience: Retries and Error Handling
     """
 
-    def __init__(self, risk_manager: RiskManager):
+    def __init__(self):
         self.risk_manager = risk_manager
-        # Route based on config
         self.broker = virtual_broker if settings.PAPER_TRADING else kotak_adapter
-
-        # Iceberg Config
-        self.ICEBERG_LIMIT = 1800  # Nifty Freeze Quantity
+        self.master_data = master_data
 
     async def initialize(self):
         """Connects to the active broker."""
@@ -47,11 +45,17 @@ class ExecutionEngine:
             logger.warning(f"🛑 Order Blocked by Risk Sentinel: {symbol} {side}")
             return None
 
-        # 2. ICEBERG LOGIC (Auto-Slice if > Freeze Qty)
-        if quantity > self.ICEBERG_LIMIT:
+        # 2. FETCH INSTRUMENT DATA
+        inst_data = self.master_data.get_data(symbol)
+        freeze_qty = 1800
+        if inst_data:
+            freeze_qty = inst_data.get('freeze_qty', 1800)
+
+        # 3. ICEBERG LOGIC
+        if quantity > freeze_qty:
             return await self._execute_iceberg(symbol, token, side, quantity, price)
 
-        # 3. STANDARD EXECUTION
+        # 4. STANDARD EXECUTION
         return await self._send_single_order(symbol, token, side, quantity, price)
 
     async def _send_single_order(self, symbol, token, side, qty, price):
@@ -85,16 +89,16 @@ class ExecutionEngine:
             await self.risk_manager.on_execution_failure()
             return None
 
-    async def _execute_iceberg(self, symbol, token, side, total_qty, price):
+    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit):
         """Splits large orders into chunks."""
-        num_legs = math.ceil(total_qty / self.ICEBERG_LIMIT)
+        num_legs = math.ceil(total_qty / freeze_limit)
         logger.info(f"🧊 ICEBERG ACTIVATED: Slicing {total_qty} into {num_legs} legs")
 
         remaining = total_qty
         responses = []
 
         for i in range(num_legs):
-            leg_qty = min(remaining, self.ICEBERG_LIMIT)
+            leg_qty = min(remaining, freeze_limit)
             logger.info(f"🧊 Processing Leg {i + 1} / {num_legs}: {leg_qty} qty")
 
             resp = await self._send_single_order(symbol, token, side, leg_qty, price)
@@ -110,11 +114,5 @@ class ExecutionEngine:
 
         return responses
 
-
-risk_manager = RiskManager(
-    risk_config=RiskConfig(max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3),
-    pos_config=PositionConfig(method="FIXED_RISK", risk_per_trade_pct=0.01),  # 1% Risk
-)
-
 # Global Accessor
-execution_engine = ExecutionEngine(risk_manager=risk_manager)
+execution_engine = ExecutionEngine()

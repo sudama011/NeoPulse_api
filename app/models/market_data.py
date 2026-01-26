@@ -9,7 +9,7 @@ class InstrumentMaster(Base):
 
     # --- PRIMARY IDENTIFIERS ---
     # pSymbol (1333) -> The Token used for placing orders
-    instrument_token = Column(Integer, primary_key=True)
+    token = Column(Integer, primary_key=True)
 
     # pTrdSymbol (HDFCBANK-EQ) -> The symbol shown in charts/UI
     trading_symbol = Column(String(50), index=True, nullable=False)
@@ -67,4 +67,4 @@ class InstrumentMaster(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     def __repr__(self):
-        return f"<Instrument {self.trading_symbol} ({self.instrument_token})>"
+        return f"<Instrument {self.trading_symbol} ({self.token})>"

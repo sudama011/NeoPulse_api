@@ -1,5 +1,5 @@
 from app.core.executors import run_blocking
-from app.strategy.base import BaseStrategy, RiskManager
+from app.strategy.base import BaseStrategy
 from app.strategy.toolbox import Toolbox as T
 
 
@@ -14,8 +14,8 @@ class RuleBasedStrategy(BaseStrategy):
     }
     """
 
-    def __init__(self, symbol, token, risk_manager: RiskManager, config: dict):
-        super().__init__("RULE_ENGINE", symbol, token, risk_manager)
+    def __init__(self, symbol, token, config: dict):
+        super().__init__("RULE_ENGINE", symbol, token)
         self.config = config
 
     async def logic(self, candle: dict):
@@ -55,8 +55,8 @@ class RuleBasedStrategy(BaseStrategy):
 
 # --- 2. MOMENTUM STRATEGY ---
 class MomentumStrategy(BaseStrategy):
-    def __init__(self, symbol, token, risk_manager: RiskManager):
-        super().__init__("MOMENTUM", symbol, token, risk_manager)
+    def __init__(self, symbol, token):
+        super().__init__("MOMENTUM", symbol, token)
 
     async def logic(self, candle: dict):
         if len(self.candles) < 50:
@@ -89,8 +89,8 @@ class MomentumStrategy(BaseStrategy):
 
 # --- 3. OPENING RANGE BREAKOUT (ORB) ---
 class ORBStrategy(BaseStrategy):
-    def __init__(self, symbol, token, risk_manager: RiskManager):
-        super().__init__("ORB", symbol, token, risk_manager)
+    def __init__(self, symbol, token):
+        super().__init__("ORB", symbol, token)
         self.range_high = 0.0
         self.range_low = 0.0
         self.range_set = False
@@ -117,8 +117,8 @@ class ORBStrategy(BaseStrategy):
 
 # --- 4. MEAN REVERSION ---
 class MeanReversionStrategy(BaseStrategy):
-    def __init__(self, symbol, token, risk_manager: RiskManager):
-        super().__init__("MEAN_REVERSION", symbol, token, risk_manager)
+    def __init__(self, symbol, token):
+        super().__init__("MEAN_REVERSION", symbol, token)
 
     async def logic(self, candle: dict):
         if len(self.candles) < 20:

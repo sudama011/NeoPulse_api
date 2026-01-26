@@ -3,15 +3,17 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 from app.execution.engine import execution_engine
-from app.risk.manager import RiskManager
+from app.risk.manager import risk_manager
 
 
 class BaseStrategy(ABC):
-    def __init__(self, name: str, symbol: str, token: str, risk_manager: RiskManager):
+    def __init__(self, name: str, symbol: str, token: str, risk_manager = risk_manager, execution_engine = execution_engine
+    ):
         self.name = name
         self.symbol = symbol
         self.token = str(token)
         self.risk_manager = risk_manager
+        self.execution_engine = execution_engine
         self.logger = logging.getLogger(f"Strat:{name}:{symbol}")
 
         # State
@@ -103,13 +105,14 @@ class BaseStrategy(ABC):
         elif self.position == 0:
             sl_price = price * 0.995  # Default 0.5% SL for sizing
             qty = self.risk_manager.calculate_size(
-                capital=100000, entry=price, sl=sl_price  # Ideally passed from engine config
+                symbol=self.symbol,
+                capital=100000, entry=price, sl=sl_price
             )
             if qty < 1:
                 return
 
         if qty > 0:
-            resp = await execution_engine.execute_order(self.symbol, self.token, side, qty)
+            resp = await self.execution_engine.execute_order(self.symbol, self.token, side, qty)
             if resp and resp.get("status") == "success":
                 self.position = qty if side == "BUY" else -qty
                 self.entry_price = price
