@@ -1,8 +1,9 @@
-import pandas as pd
-from datetime import datetime
-import uuid
 import logging
+import uuid
+from datetime import datetime
 from typing import Dict, List, Optional
+
+import pandas as pd
 
 logger = logging.getLogger("VirtualBroker")
 
@@ -12,6 +13,7 @@ class Position:
     Represents a single position in virtual broker.
     Tracks average entry price, cumulative quantity, and PnL.
     """
+
     def __init__(self):
         self.qty = 0
         self.avg_entry_price = 0.0
@@ -21,13 +23,11 @@ class Position:
         """Add to position (scale in)."""
         if qty == 0:
             return
-        
+
         # Weighted average calculation
         total_qty = abs(self.qty) + abs(qty)
         if total_qty > 0:
-            self.avg_entry_price = (
-                (abs(self.qty) * self.avg_entry_price + abs(qty) * price) / total_qty
-            )
+            self.avg_entry_price = (abs(self.qty) * self.avg_entry_price + abs(qty) * price) / total_qty
         self.qty += qty
         self.current_price = price
 
@@ -35,21 +35,21 @@ class Position:
         """Close partial position. Returns realized PnL."""
         if qty == 0:
             return 0.0
-        
+
         # Calculate realized PnL on closed quantity
         side = 1 if self.qty > 0 else -1
         realized_pnl = side * qty * (price - self.avg_entry_price)
-        
+
         self.qty -= qty * side  # Reduce position
         self.current_price = price
-        
+
         return realized_pnl
 
     def get_unrealized_pnl(self, current_price: float) -> float:
         """Calculate unrealized PnL at current market price."""
         if self.qty == 0:
             return 0.0
-        
+
         side = 1 if self.qty > 0 else -1
         return side * abs(self.qty) * (current_price - self.avg_entry_price)
 
@@ -57,20 +57,20 @@ class Position:
 class VirtualBroker:
     """
     Paper Trading Broker Simulator.
-    
+
     Mimics Kotak Neo API behavior:
     - Accepts/rejects orders based on market conditions
     - Simulates order fills on candle data
     - Tracks positions with realistic FIFO matching
     - Calculates realized and unrealized PnL
-    
+
     Thread-Safety: Use asyncio.Lock if calling from multiple coroutines
     """
 
     def __init__(self, real_neo_client):
         """
         Initialize virtual broker backed by real Neo client for market data.
-        
+
         Args:
             real_neo_client: The actual Kotak Neo API instance (for read-only methods)
         """
@@ -79,7 +79,7 @@ class VirtualBroker:
         self.positions: Dict[str, Position] = {}  # {token: Position}
         self.ledger: List[Dict] = []  # Completed trades (limited to last 1000)
         self.ledger_max_size = 1000
-        
+
         # Paper Account Config
         self.initial_balance = 1000000.0  # ₹10 Lakh virtual capital
         self.balance = self.initial_balance
@@ -102,7 +102,7 @@ class VirtualBroker:
     def place_order(self, order_params: Dict) -> Dict:
         """
         Simulates order placement.
-        
+
         Args:
             order_params: Order details matching Kotak Neo v2 format
                 {
@@ -115,7 +115,7 @@ class VirtualBroker:
                     'order_type': 'L' (Limit) or 'MKT' (Market),
                     'validity': 'DAY'
                 }
-        
+
         Returns:
             Kotak Neo response format:
             {'stat': 'Ok', 'nOrdNo': order_id, 'stCode': 200}
@@ -150,7 +150,7 @@ class VirtualBroker:
             "status": "OPEN",
             "filled_qty": 0,
             "avg_price": 0.0,
-            "timestamp": datetime.now()
+            "timestamp": datetime.now(),
         }
 
         logger.info(
@@ -159,11 +159,7 @@ class VirtualBroker:
         )
 
         # Return strict Kotak Neo JSON structure
-        return {
-            "stat": "Ok",
-            "nOrdNo": fake_order_id,
-            "stCode": 200
-        }
+        return {"stat": "Ok", "nOrdNo": fake_order_id, "stCode": 200}
 
     def cancel_order(self, order_id: str) -> Dict:
         """Cancel an open order."""
@@ -182,7 +178,7 @@ class VirtualBroker:
         """
         Called every minute with the latest 1-min candle.
         Simulates order fills based on OHLC data.
-        
+
         Args:
             token: Instrument token
             ohlc_candle: {'open': float, 'high': float, 'low': float, 'close': float, 'volume': int}
@@ -226,7 +222,7 @@ class VirtualBroker:
     def _execute_fill(self, order: Dict, qty: int, price: float) -> None:
         """
         Executes order fill and updates position.
-        
+
         Args:
             order: Order dict
             qty: Quantity filled
@@ -246,7 +242,7 @@ class VirtualBroker:
 
         # Calculate realized PnL if closing position
         realized_pnl = 0.0
-        
+
         if order["side"] == "B":
             qty_signed = qty
         else:
@@ -272,10 +268,10 @@ class VirtualBroker:
             "qty": qty,
             "price": price,
             "timestamp": datetime.now(),
-            "realized_pnl": realized_pnl
+            "realized_pnl": realized_pnl,
         }
         self.ledger.append(trade_record)
-        
+
         # Trim ledger if too large
         if len(self.ledger) > self.ledger_max_size:
             self.ledger.pop(0)
@@ -289,39 +285,35 @@ class VirtualBroker:
     def get_positions(self) -> Dict:
         """
         Returns current positions in Kotak Neo format.
-        
+
         Returns:
             {'stat': 'Ok', 'data': [{'token': '123', 'quantity': 25, 'avg_price': 1500.0, ...}]}
         """
         positions_data = []
-        
+
         for token, pos in self.positions.items():
             if pos.qty != 0:  # Only non-zero positions
-                positions_data.append({
-                    "instrumentToken": token,
-                    "quantity": pos.qty,
-                    "avgPrice": pos.avg_entry_price,
-                    "netQty": pos.qty,
-                    "netValue": pos.qty * pos.current_price,
-                    "unrealizedPnl": pos.get_unrealized_pnl(pos.current_price)
-                })
+                positions_data.append(
+                    {
+                        "instrumentToken": token,
+                        "quantity": pos.qty,
+                        "avgPrice": pos.avg_entry_price,
+                        "netQty": pos.qty,
+                        "netValue": pos.qty * pos.current_price,
+                        "unrealizedPnl": pos.get_unrealized_pnl(pos.current_price),
+                    }
+                )
 
-        return {
-            "stat": "Ok",
-            "data": positions_data
-        }
+        return {"stat": "Ok", "data": positions_data}
 
     def get_pnl_summary(self) -> Dict:
         """Returns P&L summary."""
-        unrealized_pnl = sum(
-            pos.get_unrealized_pnl(pos.current_price)
-            for pos in self.positions.values()
-        )
-        
+        unrealized_pnl = sum(pos.get_unrealized_pnl(pos.current_price) for pos in self.positions.values())
+
         return {
             "total_realized_pnl": self.total_realized_pnl,
             "total_unrealized_pnl": unrealized_pnl,
             "net_pnl": self.total_realized_pnl + unrealized_pnl,
             "current_balance": self.balance,
-            "return_pct": ((self.balance - self.initial_balance) / self.initial_balance) * 100
+            "return_pct": ((self.balance - self.initial_balance) / self.initial_balance) * 100,
         }

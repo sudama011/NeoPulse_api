@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from app.data.master import master_data
+
 from app.data.feed import market_feed
+from app.data.master import master_data
 from app.data.stream import data_stream
 
 logger = logging.getLogger("DataEngine")

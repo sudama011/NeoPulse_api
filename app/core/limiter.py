@@ -1,7 +1,7 @@
-import time
 import asyncio
-import logging
 import functools
+import logging
+import time
 
 logger = logging.getLogger("RateLimiter")
 

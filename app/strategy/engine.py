@@ -1,19 +1,20 @@
 import asyncio
 import logging
-from sqlalchemy import select
-from app.db.session import AsyncSessionLocal
-from app.models.market_data import InstrumentMaster
-from app.core.bus import event_bus
-from app.risk.manager import RiskManager, RiskConfig, PositionConfig
-from app.execution.engine import execution_engine
 
+from sqlalchemy import select
+
+from app.core.bus import event_bus
+from app.db.session import AsyncSessionLocal
+from app.execution.engine import execution_engine
+from app.models.market_data import InstrumentMaster
+from app.risk.manager import PositionConfig, RiskConfig, RiskManager
+from app.strategy.generic import GenericStrategy
 from app.strategy.strategies import (
+    MeanReversionStrategy,
     MomentumStrategy,
     ORBStrategy,
-    MeanReversionStrategy,
     RuleBasedStrategy,
 )
-from app.strategy.generic import GenericStrategy
 
 logger = logging.getLogger("StrategyEngine")
 
@@ -34,20 +35,14 @@ class StrategyEngine:
         # 1. Resolve Tokens
         token_map = await self._resolve_tokens(target_symbols)
         risk_manager = RiskManager(
-            risk_config=RiskConfig(
-                max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3
-            ),
-            pos_config=PositionConfig(
-                method="FIXED_RISK", risk_per_trade_pct=0.01  # 1% Risk
-            ),
+            risk_config=RiskConfig(max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3),
+            pos_config=PositionConfig(method="FIXED_RISK", risk_per_trade_pct=0.01),  # 1% Risk
         )
 
         # 2. Initialize Strategies
         for symbol, token in token_map.items():
             if strat_name == "GENERIC":
-                s = GenericStrategy(
-                    symbol, token, risk_manager, config.get("rules", {})
-                )
+                s = GenericStrategy(symbol, token, risk_manager, config.get("rules", {}))
             elif strat_name == "MOMENTUM":
                 s = MomentumStrategy(symbol, token, risk_manager)
             elif strat_name == "ORB":
@@ -55,9 +50,7 @@ class StrategyEngine:
             elif strat_name == "MEAN_REVERSION":
                 s = MeanReversionStrategy(symbol, token, risk_manager)
             elif strat_name == "RULE_ENGINE":
-                s = RuleBasedStrategy(
-                    symbol, token, risk_manager, config.get("rules", {})
-                )
+                s = RuleBasedStrategy(symbol, token, risk_manager, config.get("rules", {}))
             else:
                 logger.error(f"Unknown Strategy: {strat_name}")
                 continue
@@ -84,9 +77,7 @@ class StrategyEngine:
         while self.is_running:
             try:
                 payload = await event_bus.tick_queue.get()
-                ticks = (
-                    payload.get("data", []) if isinstance(payload, dict) else payload
-                )
+                ticks = payload.get("data", []) if isinstance(payload, dict) else payload
 
                 for tick in ticks:
                     token = str(tick.get("tk"))
@@ -101,16 +92,14 @@ class StrategyEngine:
         for s in self.strategies.values():
             if s.position != 0:
                 side = "SELL" if s.position > 0 else "BUY"
-                await execution_engine.execute_order(
-                    s.symbol, s.token, side, abs(s.position)
-                )
+                await execution_engine.execute_order(s.symbol, s.token, side, abs(s.position))
 
     async def _resolve_tokens(self, symbols):
         token_map = {}
         async with AsyncSessionLocal() as session:
-            stmt = select(
-                InstrumentMaster.trading_symbol, InstrumentMaster.instrument_token
-            ).where(InstrumentMaster.trading_symbol.in_(symbols))
+            stmt = select(InstrumentMaster.trading_symbol, InstrumentMaster.instrument_token).where(
+                InstrumentMaster.trading_symbol.in_(symbols)
+            )
             result = await session.execute(stmt)
             for row in result.fetchall():
                 token_map[row[0]] = str(row[1])

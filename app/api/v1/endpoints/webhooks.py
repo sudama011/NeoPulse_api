@@ -1,18 +1,21 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from app.services.strategy.manager import strategy_engine
+
 from app.adapters.telegram_client import telegram_client
 from app.core.settings import settings
+from app.services.strategy.manager import strategy_engine
 
 router = APIRouter()
+
 
 # 1. Define the Expected Signal Format (Data Model)
 class TradingViewSignal(BaseModel):
     passphrase: str
-    symbol: str      # e.g., "RELIANCE"
-    action: str      # "BUY" or "SELL"
+    symbol: str  # e.g., "RELIANCE"
+    action: str  # "BUY" or "SELL"
     quantity: int = 1
     price: float = 0.0
+
 
 @router.post("/tradingview")
 async def receive_signal(signal: TradingViewSignal):
@@ -21,7 +24,7 @@ async def receive_signal(signal: TradingViewSignal):
     """
     # A. Security Check
     # (Add WEBHOOK_PASSPHRASE to your .env to prevent hackers from spamming you)
-    valid_passphrase = getattr(settings, "WEBHOOK_PASSPHRASE", "1234") 
+    valid_passphrase = getattr(settings, "WEBHOOK_PASSPHRASE", "1234")
     if signal.passphrase != valid_passphrase:
         raise HTTPException(status_code=401, detail="Invalid Passphrase")
 
@@ -32,7 +35,7 @@ async def receive_signal(signal: TradingViewSignal):
         if strat.symbol == signal.symbol:
             target_strategy = strat
             break
-    
+
     if not target_strategy:
         await telegram_client.send_alert(f"⚠️ <b>IGNORED SIGNAL</b>\nNo active strategy found for {signal.symbol}")
         return {"status": "ignored", "reason": "Strategy not found"}
@@ -40,7 +43,7 @@ async def receive_signal(signal: TradingViewSignal):
     # C. Execute Logic
     # We inject the external signal directly into the strategy
     await telegram_client.send_alert(f"📨 <b>WEBHOOK RECEIVED</b>\n{signal.action} {signal.symbol}")
-    
+
     # Trigger the trade manually
     await target_strategy.execute_trade(signal.action.upper(), signal.price)
 

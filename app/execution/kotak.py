@@ -1,11 +1,13 @@
 import logging
+
 import pyotp
 from neo_api_client import NeoAPI
-from app.core.settings import settings
+
 from app.core.circuit_breaker import broker_circuit_breaker
 from app.core.executors import run_blocking
-from app.execution.core import BrokerAdapter
 from app.core.limiter import kotak_limiter
+from app.core.settings import settings
+from app.execution.core import BrokerAdapter
 
 logger = logging.getLogger("KotakAdapter")
 
@@ -17,9 +19,7 @@ class KotakNeoAdapter(BrokerAdapter):
     """
 
     def __init__(self):
-        self.client = NeoAPI(
-            consumer_key=settings.NEO_CONSUMER_KEY, environment=settings.NEO_ENVIRONMENT
-        )
+        self.client = NeoAPI(consumer_key=settings.NEO_CONSUMER_KEY, environment=settings.NEO_ENVIRONMENT)
         self.is_logged_in = False
 
     async def login(self):
@@ -41,13 +41,11 @@ class KotakNeoAdapter(BrokerAdapter):
         totp = pyotp.TOTP(settings.NEO_TOTP_SEED).now()
 
         # 2. Login (Get View Token)
-        self.client.totp_login(
-            mobile_number=settings.NEO_MOBILE, ucc=settings.NEO_UCC, totp=totp
-        )
+        self.client.totp_login(mobile_number=settings.NEO_MOBILE, ucc=settings.NEO_UCC, totp=totp)
 
         # 3. Validate MPIN (Get Session Token)
         self.client.totp_validate(mpin=settings.NEO_MPIN)
-    
+
     @kotak_limiter.limit
     async def place_order(self, order_params: dict) -> dict:
         """
@@ -80,5 +78,6 @@ class KotakNeoAdapter(BrokerAdapter):
 
     async def get_limits(self) -> dict:
         return await run_blocking(self.client.limits)
+
 
 kotak_adapter = KotakNeoAdapter()

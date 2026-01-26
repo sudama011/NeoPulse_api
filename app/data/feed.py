@@ -1,8 +1,6 @@
-import json
-import logging
 import asyncio
-from neo_api_client import NeoAPI
-from app.core.settings import settings
+import logging
+
 from app.data.stream import data_stream
 from app.execution.kotak import kotak_adapter
 
@@ -62,10 +60,7 @@ class MarketFeed:
             return
 
         try:
-            tokens_to_send = [
-                {"instrument_token": t, "exchange_segment": "nse_cm"}
-                for t in new_tokens
-            ]
+            tokens_to_send = [{"instrument_token": t, "exchange_segment": "nse_cm"} for t in new_tokens]
 
             # This SDK call is blocking, run in executor
             from app.core.executors import run_blocking

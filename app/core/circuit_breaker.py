@@ -1,56 +1,56 @@
-import logging
 import asyncio
-import inspect
+import logging
 from datetime import datetime
 from enum import Enum
-from typing import Callable, Any, Optional
+from typing import Any, Callable, Optional
+
 from app.core.executors import run_blocking
 
 logger = logging.getLogger("CircuitBreaker")
 
+
 class CircuitState(str, Enum):
-    CLOSED = "CLOSED"           # ✅ Healthy
-    OPEN = "OPEN"               # ❌ Broken (Fail Fast)
-    HALF_OPEN = "HALF_OPEN"     # 🟡 Recovery (Testing)
+    CLOSED = "CLOSED"  # ✅ Healthy
+    OPEN = "OPEN"  # ❌ Broken (Fail Fast)
+    HALF_OPEN = "HALF_OPEN"  # 🟡 Recovery (Testing)
+
 
 class CircuitOpenError(Exception):
     """Raised when the circuit is OPEN or probe is in progress."""
+
     pass
+
 
 class CircuitBreaker:
     """
     Thread-safe, Async/Sync compatible Circuit Breaker.
-    
+
     Features:
     - Auto-detects Sync vs Async functions.
     - Offloads Sync functions (Kotak SDK) to thread pool.
     - Strict Half-Open 'Canary' logic (only 1 probe allowed).
     """
-    
+
     def __init__(
-        self,
-        name: str,
-        failure_threshold: int = 5,
-        recovery_timeout: int = 60,
-        expected_exception: type = Exception
+        self, name: str, failure_threshold: int = 5, recovery_timeout: int = 60, expected_exception: type = Exception
     ):
         self.name = name
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.expected_exception = expected_exception
-        
+
         # State
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._last_failure_time: Optional[datetime] = None
         self._last_error_msg = ""
-        
+
         # Concurrency Control
         self._lock = asyncio.Lock()
-        
+
     async def call(self, func: Callable, *args, **kwargs) -> Any:
         """
-        Executes a function with protection. 
+        Executes a function with protection.
         Auto-handles Sync (Thread) vs Async (Await) execution.
         """
         async with self._lock:
@@ -64,11 +64,11 @@ class CircuitBreaker:
                         f"🛑 [{self.name}] Circuit OPEN. Retry in {self._remaining_recovery_time():.1f}s. "
                         f"Last Error: {self._last_error_msg}"
                     )
-            
+
             # 2. Handle HALF_OPEN (Strict Canary Mode)
             # Only allow this specific call to proceed if we just transitioned to HALF_OPEN
             # (Lock ensures only one request gets here if multiple were waiting)
-            
+
         try:
             # 3. Execution (Outside Lock to allow concurrency if CLOSED)
             if asyncio.iscoroutinefunction(func):
@@ -76,11 +76,11 @@ class CircuitBreaker:
             else:
                 # 🚀 Crucial: Offload blocking Kotak calls to thread
                 result = await run_blocking(func, *args, **kwargs)
-            
+
             # 4. Success Handler
             if self._state != CircuitState.CLOSED:
                 await self._handle_success()
-            
+
             return result
 
         except self.expected_exception as e:
@@ -95,7 +95,8 @@ class CircuitBreaker:
         return elapsed >= self.recovery_timeout
 
     def _remaining_recovery_time(self) -> float:
-        if not self._last_failure_time: return 0.0
+        if not self._last_failure_time:
+            return 0.0
         elapsed = (datetime.now() - self._last_failure_time).total_seconds()
         return max(0.0, self.recovery_timeout - elapsed)
 
@@ -116,14 +117,14 @@ class CircuitBreaker:
             self._failure_count += 1
             self._last_failure_time = datetime.now()
             self._last_error_msg = str(error)
-            
+
             current_state = self._state
-            
+
             if current_state == CircuitState.HALF_OPEN:
                 # Probe failed, go back to OPEN immediately
                 self._state = CircuitState.OPEN
                 logger.error(f"🔴 [{self.name}] Probe Failed. Circuit Re-OPENED. Error: {error}")
-            
+
             elif current_state == CircuitState.CLOSED:
                 if self._failure_count >= self.failure_threshold:
                     self._state = CircuitState.OPEN
@@ -131,12 +132,13 @@ class CircuitBreaker:
                         f"💔 [{self.name}] Threshold Reached ({self._failure_count} failures). Circuit OPENED."
                     )
 
+
 # --- Instances ---
 
 broker_circuit_breaker = CircuitBreaker(
     name="Broker API",
-    failure_threshold=3,    # 3 fails = trip
-    recovery_timeout=30,    # wait 30s before retry
+    failure_threshold=3,  # 3 fails = trip
+    recovery_timeout=30,  # wait 30s before retry
 )
 
 positions_circuit_breaker = CircuitBreaker(

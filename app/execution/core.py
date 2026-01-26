@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any, Dict
+
 
 class BrokerAdapter(ABC):
     """
     Abstract Base Class for all Brokers (Real & Virtual).
     Strategies interact ONLY with this interface, never implementation details.
     """
-    
+
     @abstractmethod
     async def login(self) -> None:
         """Establish session."""

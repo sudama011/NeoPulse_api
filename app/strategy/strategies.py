@@ -1,6 +1,6 @@
+from app.core.executors import run_blocking
 from app.strategy.base import BaseStrategy, RiskManager
 from app.strategy.toolbox import Toolbox as T
-from app.core.executors import run_blocking
 
 
 # --- 1. GENERIC RULE ENGINE (Configuration Based) ---
@@ -82,13 +82,9 @@ class MomentumStrategy(BaseStrategy):
                 pnl_pct *= -1
 
             if pnl_pct > 0.01:
-                await self.execute_order(
-                    "SELL" if self.position > 0 else "BUY", close, "TP"
-                )
+                await self.execute_order("SELL" if self.position > 0 else "BUY", close, "TP")
             elif pnl_pct < -0.005:
-                await self.execute_order(
-                    "SELL" if self.position > 0 else "BUY", close, "SL"
-                )
+                await self.execute_order("SELL" if self.position > 0 else "BUY", close, "SL")
 
 
 # --- 3. OPENING RANGE BREAKOUT (ORB) ---
@@ -105,11 +101,7 @@ class ORBStrategy(BaseStrategy):
         # 9:15 - 9:30: Build Range
         if t.hour == 9 and t.minute < 30:
             self.range_high = max(self.range_high, candle["high"])
-            self.range_low = (
-                min(self.range_low, candle["low"])
-                if self.range_low > 0
-                else candle["low"]
-            )
+            self.range_low = min(self.range_low, candle["low"]) if self.range_low > 0 else candle["low"]
             return
 
         if not self.range_set:

@@ -1,13 +1,16 @@
+import json
 import logging
 import sys
-import json
 from datetime import datetime
+
 from app.core.settings import settings
+
 
 class JSONFormatter(logging.Formatter):
     """
     Formats logs as JSON for production monitoring (Datadog/CloudWatch).
     """
+
     def format(self, record):
         log_obj = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -19,10 +22,12 @@ class JSONFormatter(logging.Formatter):
             log_obj["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_obj)
 
+
 class ColorFormatter(logging.Formatter):
     """
     Formats logs with colors for local development.
     """
+
     grey = "\x1b[38;20m"
     green = "\x1b[32;20m"
     yellow = "\x1b[33;20m"
@@ -36,13 +41,14 @@ class ColorFormatter(logging.Formatter):
         logging.INFO: green + format_str + reset,
         logging.WARNING: yellow + format_str + reset,
         logging.ERROR: red + format_str + reset,
-        logging.CRITICAL: bold_red + format_str + reset
+        logging.CRITICAL: bold_red + format_str + reset,
     }
 
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt, datefmt="%H:%M:%S")
         return formatter.format(record)
+
 
 def setup_logging():
     """

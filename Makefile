@@ -108,6 +108,6 @@ lint-fix: ## Fix auto-fixable linting issues
 
 format: ## Format code with black and isort
 	@echo "$(BLUE)🎨 Formatting code...$(RESET)"
-	$(BIN)/black app --line-length 120
+	$(BIN)/black app
 	$(BIN)/isort app
 	@echo "$(GREEN)✅ Code formatting completed$(RESET)"

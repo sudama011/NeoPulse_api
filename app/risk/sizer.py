@@ -1,8 +1,10 @@
-import math
 import logging
+import math
+
 from app.risk.models import PositionConfig
 
 logger = logging.getLogger("PositionSizer")
+
 
 class PositionSizer:
     """
@@ -31,19 +33,19 @@ class PositionSizer:
 
             # 2. Calculate Total Risk Amount (e.g., 1% of ₹1 Lakh = ₹1000)
             risk_amount = capital * self.config.risk_per_trade_pct
-            
+
             # 3. Derive Quantity
             raw_qty = risk_amount / risk_per_share
-            
+
             # 4. Cap by Max Leverage/Capital
             # Ensure we don't exceed available buying power
             max_buying_power = capital * self.config.leverage
             max_qty_by_capital = max_buying_power / entry_price
-            
+
             final_qty = min(raw_qty, max_qty_by_capital)
-            
+
             qty = math.floor(final_qty)
-            
+
             logger.info(
                 f"🧮 Sizing: Risk ₹{risk_amount:.2f} | Risk/Share ₹{risk_per_share:.2f} | "
                 f"Qty {qty} (Cap {math.floor(max_qty_by_capital)})"
@@ -53,7 +55,7 @@ class PositionSizer:
         elif self.config.method == "FIXED_CAPITAL":
             # Simple: Allocation / Price
             # e.g., Put ₹25,000 in every trade
-            allocation = capital * 0.25 # 25% allocation example
+            allocation = capital * 0.25  # 25% allocation example
             return math.floor(allocation / entry_price)
 
         return 0

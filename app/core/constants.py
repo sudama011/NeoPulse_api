@@ -1,6 +1,6 @@
 import datetime
-from zoneinfo import ZoneInfo
 from typing import List
+from zoneinfo import ZoneInfo
 
 # --- Timezone & Market Hours ---
 # We define these here so they are globally accessible without loading the Settings object
@@ -15,9 +15,21 @@ ORB_WINDOW_MINUTES = 15
 
 # --- Universe (Phase 1) ---
 TARGET_SYMBOLS: List[str] = [
-    "RELIANCE", "HDFCBANK", "INFY", "ICICIBANK", "TCS", 
-    "SBIN", "BHARTIARTL", "KOTAKBANK", "LT", "AXISBANK",
-    "ITC", "BAJFINANCE", "MARUTI", "TATASTEEL", "TATAMOTORS"
+    "RELIANCE",
+    "HDFCBANK",
+    "INFY",
+    "ICICIBANK",
+    "TCS",
+    "SBIN",
+    "BHARTIARTL",
+    "KOTAKBANK",
+    "LT",
+    "AXISBANK",
+    "ITC",
+    "BAJFINANCE",
+    "MARUTI",
+    "TATASTEEL",
+    "TATAMOTORS",
 ]
 
 # --- Neo API Segments ---

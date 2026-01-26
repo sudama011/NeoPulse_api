@@ -1,9 +1,11 @@
 import logging
-from app.risk.models import RiskConfig, PositionConfig
+
+from app.risk.models import PositionConfig, RiskConfig
 from app.risk.sentinel import RiskSentinel
 from app.risk.sizer import PositionSizer
 
 logger = logging.getLogger("RiskManager")
+
 
 class RiskManager:
     """
@@ -14,7 +16,7 @@ class RiskManager:
         # Default Configs (Should be loaded from DB/Env in production)
         self.risk_config = risk_config
         self.pos_config = pos_config
-        
+
         self.sentinel = RiskSentinel(self.risk_config)
         self.sizer = PositionSizer(self.pos_config)
 
@@ -29,7 +31,7 @@ class RiskManager:
         """Proxy to Sentinel."""
         value = qty * price
         return await self.sentinel.check_pre_trade(symbol, qty, value)
-        
+
     async def on_execution_failure(self):
         """Proxy to Sentinel Rollback."""
         await self.sentinel.rollback_slot()

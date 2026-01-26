@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     # --- Project Info ---
@@ -27,7 +28,7 @@ class Settings(BaseSettings):
     NEO_TOTP_SEED: str
 
     PAPER_TRADING: bool = True
-    
+
     # --- Telegram Control Center ---
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: int  # Your User ID (security gate)
@@ -43,7 +44,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore"  # Ignore extra fields in .env file
+        extra="ignore",  # Ignore extra fields in .env file
     )
+
 
 settings = Settings()

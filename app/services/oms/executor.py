@@ -1,16 +1,18 @@
-import logging
 import asyncio
+import logging
+from datetime import datetime
+
 from app.adapters.neo_client import neo_client
-from app.core.settings import settings
-from app.adapters.telegram_client import telegram_client 
+from app.adapters.telegram_client import telegram_client
+from app.core.executors import run_blocking
 from app.core.limiter import api_limiter
-from app.services.risk.monitor import risk_monitor
+from app.core.settings import settings
 from app.db.session import AsyncSessionLocal
 from app.models.orders import OrderLedger
-from datetime import datetime
-from app.core.executors import run_blocking
+from app.services.risk.monitor import risk_monitor
 
 logger = logging.getLogger("OMS")
+
 
 class OrderExecutor:
     _instance = None
@@ -28,19 +30,19 @@ class OrderExecutor:
             logger.error(f"🛑 RISK BLOCK: Order rejected for {symbol}")
             await telegram_client.send_alert(f"🛑 <b>RISK BLOCK</b>\nTrade rejected for {symbol}. Daily limit reached.")
             return {"status": "error", "message": "Risk Limit Breached"}
-        
+
         # 🛡️ 2. RATE LIMITER
         await api_limiter.acquire()
 
         try:
             emoji = "🔵" if side == "BUY" else "🔴"
             mode = "[PAPER]" if settings.PAPER_TRADING else "[LIVE]"
-            
+
             # --- 📝 PAPER TRADING ---
             if settings.PAPER_TRADING:
                 logger.info(f"📝 [PAPER] {side} {qty} {symbol} @ {price or 'MKT'}")
                 fake_order_id = f"PAPER-{int(datetime.now().timestamp())}"
-                
+
                 async with AsyncSessionLocal() as session:
                     db_order = OrderLedger(
                         internal_id=fake_order_id,
@@ -48,11 +50,11 @@ class OrderExecutor:
                         transaction_type=side,
                         quantity=qty,
                         price=price if price > 0 else 0.0,
-                        status="COMPLETE"
+                        status="COMPLETE",
                     )
                     session.add(db_order)
                     await session.commit()
-                
+
                 msg = (
                     f"<b>{mode} ORDER PLACED</b>\n"
                     f"{emoji} <b>{side}</b> {symbol}\n"
@@ -65,7 +67,7 @@ class OrderExecutor:
             # --- 🚀 LIVE TRADING ---
             logger.warning(f"💸 [LIVE] SENDING {side} {qty} {symbol}...")
             txn_type = "B" if side.upper() == "BUY" else "S"
-            
+
             # ✅ REFACTORED: Use shared run_blocking helper
             response = await run_blocking(
                 neo_client.client.place_order,
@@ -76,9 +78,9 @@ class OrderExecutor:
                 quantity=str(qty),
                 validity="DAY",
                 trading_symbol=symbol,
-                transaction_type=txn_type
+                transaction_type=txn_type,
             )
-            
+
             if response and response.get("stat") == "Ok":
                 msg = (
                     f"<b>{mode} ORDER SENT</b>\n"
@@ -97,5 +99,6 @@ class OrderExecutor:
             await risk_monitor.rollback_trade_slot()
             asyncio.create_task(telegram_client.send_alert(f"⚠️ <b>ORDER FAILED:</b> {e}"))
             return None
+
 
 order_executor = OrderExecutor.get_instance()
