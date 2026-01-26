@@ -6,12 +6,12 @@ import uvicorn
 from fastapi import FastAPI
 
 from app.api.v1.router import api_router
+from app.core.executors import global_executor
 from app.core.logger import setup_logging
 from app.data.engine import data_engine
 from app.execution.engine import execution_engine
 from app.risk.manager import risk_manager
 from app.strategy.engine import strategy_engine
-from app.core.executors import global_executor
 
 # Setup Logging
 setup_logging()
@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
             from app.db.session import engine
 
             await engine.dispose()
-        
+
         # STOP Thread Pool (Last thing to stop)
         global_executor.stop()
 
