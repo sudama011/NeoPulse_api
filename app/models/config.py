@@ -1,7 +1,7 @@
 # app/models/config.py
-from datetime import datetime
-
-from sqlalchemy import JSON, Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, Integer, Numeric, String
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.sql import func
 
 from app.models.base import Base
 
@@ -10,20 +10,20 @@ class SystemConfig(Base):
     __tablename__ = "system_config"
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, unique=True, index=True)  # e.g., "current_state"
+    key = Column(String, unique=True, index=True)
 
     # Core Params
-    capital = Column(Float, default=0.0)
-    leverage = Column(Float, default=1.0)
+    capital = Column(Numeric(10, 2), default=0.0)
+    leverage = Column(Integer, default=1)
 
     # Strategy Params
     strategy_name = Column(String)
-    symbols = Column(JSON)  # List of strings ["RELIANCE", "INFY"]
-    strategy_params = Column(JSON)  # {"window": 15, ...}
+    symbols = Column(JSONB)
+    strategy_params = Column(JSONB)
 
     # Risk Params
     max_daily_loss = Column(Float)
     max_concurrent_trades = Column(Integer)
-    risk_params = Column(JSON)
+    risk_params = Column(JSONB)
 
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

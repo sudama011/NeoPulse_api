@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # --- Project Info ---
     APP_NAME: str = "NeoPulse"
-    ENV: str = "dev"  # dev, prod
+    ENV: str = "dev"
     LOG_LEVEL: str = "INFO"
 
     # --- Database (AsyncPG) ---
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # --- Security ---
     SECRET_KEY: str
-    ENCRYPTION_KEY: str  # For Fernet (Kotak Creds)
+    ENCRYPTION_KEY: str
 
     # --- Kotak Neo Credentials ---
     NEO_ENVIRONMENT: str = "prod"
@@ -31,20 +31,21 @@ class Settings(BaseSettings):
 
     # --- Telegram Control Center ---
     TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_CHAT_ID: int  # Your User ID (security gate)
+    TELEGRAM_CHAT_ID: int
 
-    # --- Computed Fields ---
+    # --- Webhook Security ---
+    WEBHOOK_PASSPHRASE: str = "1234"
+
     @computed_field
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
-    # Pydantic V2 Configuration
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore",  # Ignore extra fields in .env file
+        extra="ignore",
     )
 
 
