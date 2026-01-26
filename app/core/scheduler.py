@@ -5,7 +5,7 @@ from datetime import datetime
 import holidays
 
 from app.core.constants import IST, MARKET_CLOSE_TIME, MARKET_OPEN_TIME
-from app.services.strategy.manager import strategy_engine
+from app.strategy.engine import strategy_engine
 
 logger = logging.getLogger("Scheduler")
 
