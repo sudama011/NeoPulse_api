@@ -1,110 +1,120 @@
 import asyncio
 import logging
-
+from typing import Dict, List
 from sqlalchemy import select
 
-from app.data.feed import market_feed
 from app.db.session import AsyncSessionLocal
-from app.execution.engine import execution_engine
-from app.models.market_data import InstrumentMaster
-from app.risk.manager import PositionConfig, RiskConfig, RiskManager
-from app.strategy.generic import GenericStrategy
-from app.strategy.strategies import (
-    MeanReversionStrategy,
-    MomentumStrategy,
-    ORBStrategy,
-    RuleBasedStrategy,
-)
+from app.models.config import SystemConfig
+from app.data.stream import data_stream
+from app.strategy.base import BaseStrategy
+from app.strategy.strategies import MACDVolumeStrategy 
 
 logger = logging.getLogger("StrategyEngine")
 
-
 class StrategyEngine:
+    """
+    The Orchestrator.
+    - Loads strategies from DB.
+    - Runs each strategy in an isolated Async Task.
+    - Handles graceful shutdown.
+    """
     def __init__(self):
-        self.strategies = {}  # {token: StrategyInstance}
-        self.is_running = False
+        self.active_strategies: Dict[str, BaseStrategy] = {}
+        self.tasks: List[asyncio.Task] = []
+        self._running = False
 
-    async def start(self, config: dict):
-        """Starts the engine with a configuration."""
-        if self.is_running:
-            return
-
-        target_symbols = config.get("symbols", [])
-        strat_name = config.get("strategy", "MOMENTUM")
-
-        # 1. Resolve Tokens
-        token_map = await self._resolve_tokens(target_symbols)
-        risk_manager = RiskManager(
-            risk_config=RiskConfig(max_daily_loss=2000.0, max_capital_per_trade=50000.0, max_open_trades=3),
-            pos_config=PositionConfig(method="FIXED_RISK", risk_per_trade_pct=0.01),  # 1% Risk
-        )
-
-        # 2. Initialize Strategies
-        for symbol, token in token_map.items():
-            if strat_name == "GENERIC":
-                s = GenericStrategy(symbol, token, risk_manager, config.get("rules", {}))
-            elif strat_name == "MOMENTUM":
-                s = MomentumStrategy(symbol, token, risk_manager)
-            elif strat_name == "ORB":
-                s = ORBStrategy(symbol, token)
-            elif strat_name == "MEAN_REVERSION":
-                s = MeanReversionStrategy(symbol, token, risk_manager)
-            elif strat_name == "RULE_ENGINE":
-                s = RuleBasedStrategy(symbol, token, risk_manager, config.get("rules", {}))
+    async def initialize(self):
+        """
+        Load strategies from database configuration.
+        """
+        logger.info("🧠 Strategy Engine: Initializing...")
+        async with AsyncSessionLocal() as session:
+            # Fetch active strategy config
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == "strategy_config"))
+            config = result.scalars().first()
+            
+            if config and config.symbols:
+                # Expected JSON in DB: 
+                # {"SYMBOLS": [{"name": "RELIANCE", "token": "738561", "params": {"ema_period": 200}}]}
+                symbols_config = config.symbols.get("SYMBOLS", [])
+                
+                for s in symbols_config:
+                    # Create Strategy Object (1 per Symbol)
+                    strategy = MACDVolumeStrategy(
+                        name=f"MACD_{s['name']}",
+                        symbol=s['name'],
+                        token=s['token'],
+                        params=s.get("params", {})
+                    )
+                    self.add_strategy(strategy)
             else:
-                logger.error(f"Unknown Strategy: {strat_name}")
-                continue
+                logger.warning("⚠️ No Strategy Config found in DB. Engine Idle.")
 
-            # Enable features from config
-            s.trailing_enabled = config.get("trailing_sl", False)
-            self.strategies[token] = s
+    def add_strategy(self, strategy: BaseStrategy):
+        self.active_strategies[strategy.token] = strategy
+        logger.info(f"🧩 Registered Strategy: {strategy.name} [{strategy.token}]")
 
-        self.is_running = True
-        logger.info(f"🚀 Engine Started with {len(self.strategies)} active strategies")
+    async def _run_strategy_loop(self, strategy: BaseStrategy):
+        """
+        The isolated heartbeat for a single strategy.
+        """
+        logger.info(f"🏁 Starting Loop: {strategy.name}")
+        
+        # 1. Initialize (Sync Position)
+        await strategy.initialize()
 
-        # 3. Start Event Loop
-        asyncio.create_task(self._tick_loop())
+        # 2. Subscribe to Data Stream
+        try:
+            # Use Context Manager to ensure clean unsubscribe
+            async with await data_stream.subscribe(strategy.token) as subscription:
+                while self._running and strategy.is_active:
+                    try:
+                        # Wait for tick
+                        tick = await subscription.get()
+                        
+                        # Execute Logic (Protected by safe_on_tick)
+                        await strategy.safe_on_tick(tick)
+                        
+                    except asyncio.CancelledError:
+                        logger.info(f"🛑 Task Cancelled: {strategy.name}")
+                        break
+                    except Exception as e:
+                        logger.error(f"💥 Critical Loop Error in {strategy.name}: {e}")
+                        await asyncio.sleep(1) # Prevent tight loop on error
+        finally:
+            logger.info(f"👋 Strategy Loop Ended: {strategy.name}")
+
+    async def start(self):
+        """
+        Ignition.
+        """
+        if self._running:
+            return
+            
+        self._running = True
+        logger.info(f"🚀 Strategy Engine: Launching {len(self.active_strategies)} Strategies...")
+
+        # Spawn tasks
+        for token, strategy in self.active_strategies.items():
+            task = asyncio.create_task(self._run_strategy_loop(strategy))
+            self.tasks.append(task)
 
     async def stop(self):
-        """Stops engine and optionally squares off."""
-        self.is_running = False
-        await self._square_off_all()
-        self.strategies.clear()
-        logger.info("🛑 Engine Stopped")
+        """
+        Graceful Shutdown.
+        """
+        logger.info("🛑 Strategy Engine: Stopping...")
+        self._running = False
+        
+        # Cancel all tasks
+        for task in self.tasks:
+            task.cancel()
+        
+        # Wait for cleanup
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        
+        self.tasks = []
+        logger.info("✅ Strategy Engine: Stopped.")
 
-    async def _tick_loop(self):
-        """Consumes ticks from EventBus."""
-        while self.is_running:
-            try:
-                payload = await market_feed.tick_queue.get()
-                ticks = payload.get("data", []) if isinstance(payload, dict) else payload
-
-                for tick in ticks:
-                    token = str(tick.get("tk"))
-                    if token in self.strategies:
-                        # Fire and forget strategy logic
-                        asyncio.create_task(self.strategies[token].on_tick(tick))
-            except Exception as e:
-                logger.error(f"Loop Error: {e}")
-
-    async def _square_off_all(self):
-        logger.warning("🟥 Squaring off all positions...")
-        for s in self.strategies.values():
-            if s.position != 0:
-                side = "SELL" if s.position > 0 else "BUY"
-                await execution_engine.execute_order(s.symbol, s.token, side, abs(s.position))
-
-    async def _resolve_tokens(self, symbols):
-        token_map = {}
-        async with AsyncSessionLocal() as session:
-            stmt = select(InstrumentMaster.trading_symbol, InstrumentMaster.instrument_token).where(
-                InstrumentMaster.trading_symbol.in_(symbols)
-            )
-            result = await session.execute(stmt)
-            for row in result.fetchall():
-                token_map[row[0]] = str(row[1])
-        return token_map
-
-
-# Global Accessor
 strategy_engine = StrategyEngine()
