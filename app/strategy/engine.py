@@ -1,15 +1,17 @@
 import asyncio
 import logging
 from typing import Dict, List
+
 from sqlalchemy import select
 
+from app.data.stream import data_stream
 from app.db.session import AsyncSessionLocal
 from app.models.config import SystemConfig
-from app.data.stream import data_stream
 from app.strategy.base import BaseStrategy
-from app.strategy.strategies import MACDVolumeStrategy 
+from app.strategy.strategies import MACDVolumeStrategy
 
 logger = logging.getLogger("StrategyEngine")
+
 
 class StrategyEngine:
     """
@@ -18,6 +20,7 @@ class StrategyEngine:
     - Runs each strategy in an isolated Async Task.
     - Handles graceful shutdown.
     """
+
     def __init__(self):
         self.active_strategies: Dict[str, BaseStrategy] = {}
         self.tasks: List[asyncio.Task] = []
@@ -32,19 +35,16 @@ class StrategyEngine:
             # Fetch active strategy config
             result = await session.execute(select(SystemConfig).where(SystemConfig.key == "strategy_config"))
             config = result.scalars().first()
-            
+
             if config and config.symbols:
-                # Expected JSON in DB: 
+                # Expected JSON in DB:
                 # {"SYMBOLS": [{"name": "RELIANCE", "token": "738561", "params": {"ema_period": 200}}]}
                 symbols_config = config.symbols.get("SYMBOLS", [])
-                
+
                 for s in symbols_config:
                     # Create Strategy Object (1 per Symbol)
                     strategy = MACDVolumeStrategy(
-                        name=f"MACD_{s['name']}",
-                        symbol=s['name'],
-                        token=s['token'],
-                        params=s.get("params", {})
+                        name=f"MACD_{s['name']}", symbol=s["name"], token=s["token"], params=s.get("params", {})
                     )
                     self.add_strategy(strategy)
             else:
@@ -59,7 +59,7 @@ class StrategyEngine:
         The isolated heartbeat for a single strategy.
         """
         logger.info(f"🏁 Starting Loop: {strategy.name}")
-        
+
         # 1. Initialize (Sync Position)
         await strategy.initialize()
 
@@ -71,16 +71,16 @@ class StrategyEngine:
                     try:
                         # Wait for tick
                         tick = await subscription.get()
-                        
+
                         # Execute Logic (Protected by safe_on_tick)
                         await strategy.safe_on_tick(tick)
-                        
+
                     except asyncio.CancelledError:
                         logger.info(f"🛑 Task Cancelled: {strategy.name}")
                         break
                     except Exception as e:
                         logger.error(f"💥 Critical Loop Error in {strategy.name}: {e}")
-                        await asyncio.sleep(1) # Prevent tight loop on error
+                        await asyncio.sleep(1)  # Prevent tight loop on error
         finally:
             logger.info(f"👋 Strategy Loop Ended: {strategy.name}")
 
@@ -90,7 +90,7 @@ class StrategyEngine:
         """
         if self._running:
             return
-            
+
         self._running = True
         logger.info(f"🚀 Strategy Engine: Launching {len(self.active_strategies)} Strategies...")
 
@@ -105,16 +105,17 @@ class StrategyEngine:
         """
         logger.info("🛑 Strategy Engine: Stopping...")
         self._running = False
-        
+
         # Cancel all tasks
         for task in self.tasks:
             task.cancel()
-        
+
         # Wait for cleanup
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
-        
+
         self.tasks = []
         logger.info("✅ Strategy Engine: Stopped.")
+
 
 strategy_engine = StrategyEngine()

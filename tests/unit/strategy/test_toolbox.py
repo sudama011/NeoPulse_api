@@ -1,7 +1,9 @@
-import pytest
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
+
 from app.strategy.toolbox import tb
+
 
 class TestToolbox:
     def test_extract_helper(self):
@@ -24,7 +26,7 @@ class TestToolbox:
 
     def test_rsi_calculation(self):
         # Create a sequence of gains
-        prices = [100.0 + i for i in range(20)] 
+        prices = [100.0 + i for i in range(20)]
         rsi = tb.rsi(prices, length=14)
         # Constant gain -> RSI should be near 100
         assert rsi > 70.0
@@ -33,21 +35,17 @@ class TestToolbox:
         # Mock uptrend candles
         candles = []
         for i in range(20):
-            candles.append({
-                "high": 100 + i + 2,
-                "low": 100 + i - 2,
-                "close": 100 + i
-            })
-        
+            candles.append({"high": 100 + i + 2, "low": 100 + i - 2, "close": 100 + i})
+
         val, trend = tb.supertrend(candles, length=10, factor=3.0)
         assert trend == 1  # Should be Uptrend
-        assert val < candles[-1]["close"] # Support line below price
+        assert val < candles[-1]["close"]  # Support line below price
 
     def test_patterns(self):
         # Doji
         doji = {"open": 100, "close": 100.1, "high": 105, "low": 95}
-        assert tb.is_doji(doji) == True
-        
+        assert tb.is_doji(doji)
+
         # Hammer
         hammer = {"open": 100, "close": 102, "high": 102.5, "low": 90}
-        assert tb.is_hammer(hammer) == True
+        assert tb.is_hammer(hammer)

@@ -3,10 +3,11 @@ import asyncio
 import os
 import sys
 
+from app.db.init_db import init_db
+
 # Add project root to path so we can import 'app'
 sys.path.append(os.getcwd())
 
-from app.db.init_db import init_db
 
 if __name__ == "__main__":
     if sys.platform == "win32":
