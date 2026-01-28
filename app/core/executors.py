@@ -28,8 +28,12 @@ class GlobalExecutor:
 
     def get_pool(self) -> ThreadPoolExecutor:
         if self._pool is None:
-            self.start()  # Lazy load if needed
+            raise RuntimeError("Global Executor is not started or has been stopped.")
         return self._pool
+
+    @property
+    def is_active(self) -> bool:
+        return self._pool is not None
 
 
 # Global Instance
@@ -39,7 +43,13 @@ global_executor = GlobalExecutor()
 async def run_blocking(func: Callable, *args, **kwargs) -> Any:
     """
     Executes a blocking function in the global thread pool.
+    Safe against shutdown race conditions.
     """
+    if not global_executor.is_active:
+        logger.error("⚠️ Attempted to run blocking task while Executor is down.")
+        raise RuntimeError("Global Executor is shutdown")
+
     loop = asyncio.get_running_loop()
     func_part = partial(func, *args, **kwargs)
+
     return await loop.run_in_executor(global_executor.get_pool(), func_part)

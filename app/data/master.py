@@ -62,7 +62,7 @@ class MasterDataManager:
                 token_str = str(i.token)
 
                 # Store critical execution data
-                self._cache[i.symbol] = {
+                self._cache[i.trading_symbol] = {
                     "token": token_str,
                     "trading_symbol": i.trading_symbol,
                     "lot_size": i.lot_size or 1,
@@ -95,6 +95,11 @@ class MasterDataManager:
                 resp = await client.get(csv_url, timeout=30.0)
                 resp.raise_for_status()
                 csv_content = resp.content
+
+            # file_name = "instruments_master.csv"
+            # with open(file_name, "wb") as f:
+            #     f.write(csv_content)
+            # logger.info(f"💾 Saved raw CSV to disk: {file_name}")
         except Exception as e:
             logger.critical(f"❌ Download Failed: {e}")
             return

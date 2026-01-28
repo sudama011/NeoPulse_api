@@ -37,17 +37,17 @@ class RiskManager:
             if db_config:
                 # Apply DB values
                 self.config.max_daily_loss = float(db_config.max_daily_loss) if db_config.max_daily_loss else 1000.0
-                self.config.max_concurrent_trades = db_config.max_concurrent_trades or 3
-
-                # FIX: Load Leverage explicitly
+                self.config.max_concurrent_trades = int(db_config.max_concurrent_trades or 3)
                 self.leverage = float(db_config.leverage) if db_config.leverage else 1.0
+                self.total_allocated_capital = float(db_config.capital) if db_config.capital else 100000.0
 
-                # Apply Sizing config if present in JSONB
                 if db_config.risk_params:
                     rp = db_config.risk_params
                     self.config.risk_per_trade_pct = float(rp.get("risk_per_trade_pct", 0.01))
 
-                logger.info(f"✅ Risk Config Loaded: MaxLoss={self.config.max_daily_loss}, Lev={self.leverage}x")
+                logger.info(
+                    f"✅ Risk Config Loaded: Cap={self.total_allocated_capital}, MaxLoss={self.config.max_daily_loss}"
+                )
 
         # 2. Sync State with Broker
         await self.sentinel.sync_state()
@@ -55,20 +55,21 @@ class RiskManager:
 
     async def calculate_size(self, symbol: str, entry: float, sl: float, confidence: float = 1.0) -> int:
         """
-        Smart Sizing wrapper. Fetches live limits and calculates safe quantity.
+        Smart Sizing wrapper.
         """
         from app.data.master import master_data  # Lazy import
 
-        # 1. Get Live Limits from Broker (Actual Money Left)
-        available_cash = 0.0
+        # 1. Get Live Limits
+        available_cash = self.total_allocated_capital
         try:
             if kotak_adapter.is_logged_in:
                 limits = await kotak_adapter.get_limits()
-                available_cash = float(limits.get("net", 0.0))
-            else:
-                available_cash = self.total_allocated_capital
+                # Kotak 'net' usually implies available margin
+                net_val = limits.get("net", 0.0)
+                if net_val:
+                    available_cash = float(net_val)
         except Exception:
-            available_cash = self.total_allocated_capital
+            pass  # Fallback to allocated capital
 
         # 2. Get Slot Info
         # open_slots = Total Allowed - Currently Used
@@ -104,7 +105,6 @@ class RiskManager:
 
     async def on_trade_close(self, pnl: float):
         await self.sentinel.update_post_trade_close(pnl)
-
 
 # Global Instance
 risk_manager = RiskManager()

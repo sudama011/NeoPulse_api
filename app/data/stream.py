@@ -1,14 +1,15 @@
 import asyncio
 import logging
+import time
 import uuid
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
 logger = logging.getLogger("DataStream")
 
 
 class DataStream:
     """
-    High-Performance Event Bus with Pub/Sub cleanup.
+    High-Performance Event Bus with Pub/Sub cleanup and Lag Monitoring.
     """
 
     def __init__(self):
@@ -18,8 +19,9 @@ class DataStream:
         # Subscribers: {token: {subscriber_id: Queue}}
         self._subscribers: Dict[str, Dict[str, asyncio.Queue]] = {}
 
-        # Global listeners (e.g., Logger, UI)
-        self._global_listeners: Dict[str, asyncio.Queue] = {}
+        # Monitoring
+        self.metrics = {"in_rate": 0, "dropped_main": 0, "dropped_sub": 0}
+        self.last_log_time = time.time()
 
     async def publish(self, ticks: List[Dict[str, Any]]):
         """
@@ -30,14 +32,19 @@ class DataStream:
 
         try:
             self.tick_queue.put_nowait(ticks)
+            self.metrics["in_rate"] += len(ticks)
         except asyncio.QueueFull:
-            # If main queue is full, system is overloaded. Drop oldest? No, drop new (tail drop).
-            logger.warning("⚠️ SYSTEM OVERLOAD: Main Tick Queue Full. Dropping packets.")
+            self.metrics["dropped_main"] += len(ticks)
+            # Log periodically to avoid spamming I/O
+            if time.time() - self.last_log_time > 5:
+                logger.warning("⚠️ SYSTEM OVERLOAD: Main Tick Queue Full. Dropping packets.")
+                self.last_log_time = time.time()
 
     async def subscribe(self, token: str) -> "Subscription":
         """
         Returns a Subscription handle that auto-cleans up on exit.
         """
+        # Buffer size per strategy (allow some burstiness)
         queue = asyncio.Queue(maxsize=1000)
         sub_id = uuid.uuid4().hex
 
@@ -45,7 +52,6 @@ class DataStream:
             self._subscribers[token] = {}
 
         self._subscribers[token][sub_id] = queue
-
         return Subscription(self, token, sub_id, queue)
 
     def _unsubscribe(self, token: str, sub_id: str):
@@ -53,13 +59,13 @@ class DataStream:
             del self._subscribers[token][sub_id]
             if not self._subscribers[token]:
                 del self._subscribers[token]
-            logger.debug(f"🔌 Unsubscribed {sub_id[:8]} from {token}")
 
     async def consume(self):
         """
         The Heartbeat: Routes ticks to subscribers.
         """
         logger.info("⚡ DataStream Router Started")
+
         while True:
             try:
                 ticks = await self.tick_queue.get()
@@ -67,25 +73,19 @@ class DataStream:
                 for tick in ticks:
                     token = str(tick.get("tk"))
 
-                    # 1. Route to Token Subscribers
                     if token in self._subscribers:
-                        # Iterate over a copy to allow safe modification/deletion
+                        # Clone list to safe iterate while modifying
                         for sub_id, q in list(self._subscribers[token].items()):
                             try:
                                 q.put_nowait(tick)
                             except asyncio.QueueFull:
-                                # Slow consumer detected
-                                pass
-
-                    # 2. Route to Global Listeners
-                    for sub_id, q in list(self._global_listeners.items()):
-                        try:
-                            q.put_nowait(tick)
-                        except asyncio.QueueFull:
-                            pass
+                                self.metrics["dropped_sub"] += 1
+                                # Log specifically which consumer is slow?
+                                # For now, just global metric to keep router fast.
 
             except Exception as e:
                 logger.error(f"❌ Router Error: {e}")
+                await asyncio.sleep(0.1)  # Prevent CPU spin loop on error
 
 
 class Subscription:

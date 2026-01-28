@@ -16,7 +16,6 @@ logger = logging.getLogger("KotakAdapter")
 class KotakNeoAdapter(BrokerAdapter):
     """
     Production-Ready Adapter for Kotak Neo API v2.
-    Features: Auto-Login, Thread-Pooling, Circuit Breaking.
     """
 
     def __init__(self):
@@ -38,20 +37,14 @@ class KotakNeoAdapter(BrokerAdapter):
 
     def _login_sync(self):
         """Blocking login call (runs in executor)."""
-        # 1. Generate TOTP
         totp = pyotp.TOTP(settings.NEO_TOTP_SEED).now()
-
-        # 2. Login (Get View Token)
         self.client.totp_login(mobile_number=settings.NEO_MOBILE, ucc=settings.NEO_UCC, totp=totp)
-
-        # 3. Validate MPIN (Get Session Token)
         self.client.totp_validate(mpin=settings.NEO_MPIN)
 
     @kotak_limiter.limit
     async def place_order(self, order_params: dict) -> dict:
         """
         Executes order on Exchange.
-        Wraps blocking SDK call in thread pool.
         """
         try:
             response = await run_blocking(
@@ -66,16 +59,22 @@ class KotakNeoAdapter(BrokerAdapter):
                 transaction_type=order_params.get("transaction_type"),
                 amo="NO",
             )
+
+     
             await notification_manager.notify_trade(
                 order_params.get("trading_symbol"),
                 order_params.get("transaction_type"),
                 order_params.get("quantity"),
                 order_params.get("price"),
-                "Strategy",
+                order_params.get("tag", "Strategy"),
             )
+            
+
             return response
+
         except Exception as e:
             logger.error(f"❌ Broker Order Failed: {e}")
+            # Ensure we return a structured error that Engine can parse
             return {"stat": "Not_Ok", "errMsg": str(e)}
 
     async def cancel_order(self, order_id: str) -> dict:

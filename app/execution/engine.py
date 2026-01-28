@@ -1,14 +1,21 @@
 import asyncio
 import logging
 import math
+import uuid
+from datetime import datetime
 from typing import Union
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import settings
 from app.data.master import master_data
+from app.db.session import AsyncSessionLocal
 from app.execution.kotak import kotak_adapter
 from app.execution.virtual import virtual_broker
+from app.models.orders import OrderLedger
 from app.risk.manager import risk_manager
-from app.schemas.execution import OrderResponse, OrderStatus  # NEW
+from app.schemas.execution import OrderResponse, OrderStatus
 
 logger = logging.getLogger("ExecutionEngine")
 
@@ -28,7 +35,7 @@ class ExecutionEngine:
         self, symbol: str, token: str, side: str, quantity: int, price: float = 0.0, tag: str = "STRATEGY"
     ) -> Union[OrderResponse, None]:
         """
-        Unified entry point. Returns a standardized OrderResponse.
+        Unified entry point. Persists order to DB and Routes to Broker.
         """
         # 1. RISK CHECK
         if not await self.risk_manager.can_trade(symbol, quantity, price):
@@ -41,11 +48,37 @@ class ExecutionEngine:
 
         # 3. ROUTE (Standard vs Iceberg)
         if quantity > freeze_qty:
-            return await self._execute_iceberg(symbol, token, side, quantity, price, freeze_qty)
+            return await self._execute_iceberg(symbol, token, side, quantity, price, freeze_qty, tag)
         else:
-            return await self._send_single_order(symbol, token, side, quantity, price)
+            return await self._send_single_order(symbol, token, side, quantity, price, tag)
 
-    async def _send_single_order(self, symbol, token, side, qty, price) -> OrderResponse:
+    async def _send_single_order(self, symbol, token, side, qty, price, tag) -> OrderResponse:
+        """
+        Executes a single atomic order with DB persistence.
+        """
+        internal_id = uuid.uuid4()
+
+        # A. PRE-ORDER PERSISTENCE (Audit Trail)
+        async with AsyncSessionLocal() as session:
+            try:
+                ledger_entry = OrderLedger(
+                    internal_id=internal_id,
+                    token=int(token),
+                    transaction_type=side,
+                    quantity=qty,
+                    price=price,
+                    order_type="L" if price > 0 else "MKT",
+                    product="MIS",
+                    status="PENDING_BROKER",
+                    strategy_id=tag,
+                )
+                session.add(ledger_entry)
+                await session.commit()
+            except Exception as e:
+                logger.error(f"❌ DB Error (Pre-Order): {e}")
+                # We do NOT abort trade on DB error, but we log critically
+
+        # B. BROKER EXECUTION
         params = {
             "exchange_segment": "nse_cm",
             "trading_symbol": symbol,
@@ -56,27 +89,27 @@ class ExecutionEngine:
             "order_type": "L" if price > 0 else "MKT",
             "product": "MIS",
             "validity": "DAY",
+            "tag": tag,  # Pass tag to broker if supported
         }
+
+        response_obj = None
 
         try:
             # Broker returns raw dict
             raw_resp = await self.broker.place_order(params)
 
             # --- STANDARDIZE RESPONSE ---
-            # Kotak success: {'stat': 'Ok', 'nOrdNo': '123'}
-            # Kotak error: {'stat': 'Not_Ok', 'errMsg': '...'}
-
             is_success = raw_resp.get("stat") == "Ok" or "nOrdNo" in raw_resp
 
             if is_success:
                 order_id = raw_resp.get("nOrdNo", "UNKNOWN")
                 logger.info(f"✅ Order Sent: {symbol} {side} {qty} | ID: {order_id}")
 
-                return OrderResponse(
+                response_obj = OrderResponse(
                     order_id=order_id,
-                    status=OrderStatus.COMPLETE,  # Assumed complete for MKT/Limit placement
+                    status=OrderStatus.COMPLETE,
                     filled_qty=qty,
-                    average_price=price,  # Approximation until we get trade update
+                    average_price=price,
                     raw_response=raw_resp,
                 )
             else:
@@ -84,16 +117,41 @@ class ExecutionEngine:
                 logger.error(f"❌ Order Rejected: {msg}")
                 await self.risk_manager.on_execution_failure()
 
-                return OrderResponse(
+                response_obj = OrderResponse(
                     order_id="NA", status=OrderStatus.REJECTED, error_message=msg, raw_response=raw_resp
                 )
 
         except Exception as e:
             logger.error(f"🔥 Execution Exception: {e}")
             await self.risk_manager.on_execution_failure()
-            return OrderResponse(order_id="NA", status=OrderStatus.FAILED, error_message=str(e))
+            response_obj = OrderResponse(order_id="NA", status=OrderStatus.FAILED, error_message=str(e))
 
-    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit) -> OrderResponse:
+        # C. POST-ORDER UPDATE
+        # We fire-and-forget this update so we don't block the strategy loop
+        asyncio.create_task(self._update_ledger(internal_id, response_obj))
+
+        return response_obj
+
+    async def _update_ledger(self, internal_id: uuid.UUID, response: OrderResponse):
+        """Updates the DB asynchronously."""
+        async with AsyncSessionLocal() as session:
+            try:
+                stmt = select(OrderLedger).where(OrderLedger.internal_id == internal_id)
+                result = await session.execute(stmt)
+                entry = result.scalars().first()
+
+                if entry:
+                    entry.exchange_id = response.order_id if response.order_id != "NA" else None
+                    entry.status = response.status.value
+                    entry.raw_response = response.raw_response
+                    if response.error_message:
+                        entry.rejection_reason = response.error_message
+
+                    await session.commit()
+            except Exception as e:
+                logger.error(f"❌ DB Error (Post-Order): {e}")
+
+    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit, tag) -> OrderResponse:
         """
         Smart Iceberg: Aggregates results of multiple legs.
         """
@@ -109,17 +167,16 @@ class ExecutionEngine:
             leg_qty = min(remaining, freeze_limit)
 
             # Execute Leg
-            resp = await self._send_single_order(symbol, token, side, leg_qty, price)
+            resp = await self._send_single_order(symbol, token, side, leg_qty, price, f"{tag}_ICE_{i+1}")
 
             if resp.status == OrderStatus.COMPLETE:
                 filled_so_far += leg_qty
                 remaining -= leg_qty
                 order_ids.append(resp.order_id)
-                # Small delay to prevent rate limit spam
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.2)  # Rate limit protection
             else:
-                logger.error(f"❌ Iceberg Leg {i + 1} Failed! Stopping chain.")
-                errors.append(resp.error_message)
+                logger.error(f"❌ Iceberg Leg {i + 1} Failed! Stopping chain. Reason: {resp.error_message}")
+                errors.append(f"Leg {i+1}: {resp.error_message}")
                 break
 
         # Generate Consolidated Report
@@ -128,11 +185,11 @@ class ExecutionEngine:
             final_status = OrderStatus.FAILED
 
         return OrderResponse(
-            order_id=",".join(order_ids),  # Return comma-separated IDs
+            order_id=",".join(order_ids),
             status=final_status,
             filled_qty=filled_so_far,
             average_price=price,
-            error_message=" | ".join(filter(None, errors)) if errors else None,
+            error_message=" | ".join(errors) if errors else None,
         )
 
 

@@ -24,7 +24,12 @@ class PositionSizer:
         """
         Calculates quantity based on Risk, Slot Partitioning, and Confidence.
         """
-        if entry_price <= 0 or sl_price <= 0 or max_slots <= 0:
+        # Safety Guards
+        if entry_price <= 0 or sl_price <= 0:
+            logger.error("❌ Sizer: Invalid prices provided.")
+            return 0
+
+        if max_slots <= 0:
             return 0
 
         # 1. Determine Max Allocation per Slot (The "Fair Share")
@@ -32,10 +37,6 @@ class PositionSizer:
         slot_allocation = total_capital / max_slots
 
         # 2. Apply Confidence Multiplier
-        # If confidence is high (e.g. 1.5), we can go up to 37.5k
-        # But we must leave enough room for at least 50% of remaining slots?
-        # For simplicity: We allow borrowing only if we have >1 open slots.
-
         adjusted_allocation = slot_allocation * confidence
 
         # Guardrail: Never use more than what's actually available
@@ -51,12 +52,12 @@ class PositionSizer:
         qty_by_cap = (max_allowed_cap * leverage) / entry_price
 
         # 4. Calculate Quantity based on Risk Limit (Stop Loss)
-        # Risk Amount = Capital * Risk% (e.g., 1% of Total Capital)
         risk_amount = total_capital * risk_per_trade_pct
         risk_per_share = abs(entry_price - sl_price)
 
-        if risk_per_share == 0:
-            return 0
+        if risk_per_share <= 0.05:  # Prevent huge size on tight SL
+            # Fallback: Assume at least 0.5% risk if SL is too tight to be real
+            risk_per_share = entry_price * 0.005
 
         qty_by_risk = risk_amount / risk_per_share
 
@@ -65,6 +66,10 @@ class PositionSizer:
 
         # 6. Lot Size Adjustment
         qty = math.floor(raw_qty / lot_size) * lot_size
+
+        # 7. Final Sanity Check
+        if qty <= 0:
+            return 0
 
         logger.info(
             f"🧮 Sizing: Cap(₹{max_allowed_cap:.0f}) vs Risk(₹{risk_amount:.0f}) " f"-> Qty {qty} (Conf: {confidence})"

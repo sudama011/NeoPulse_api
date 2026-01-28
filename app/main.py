@@ -4,11 +4,15 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.executors import global_executor
 from app.core.logger import setup_logging
 from app.data.feed import market_feed
+
+# 1. Import master_data
+from app.data.master import master_data
 from app.execution.engine import execution_engine
 from app.risk.manager import risk_manager
 from app.strategy.engine import strategy_engine
@@ -28,18 +32,19 @@ async def lifespan(app: FastAPI):
     # 1. Start Thread Pool (Infrastructure)
     global_executor.start()
 
-    # 2. Initialize Execution (Connect to Broker)
-    # This ensures we have a valid session before strategies try to sync positions
+    # 2. Load Master Data
+    await master_data.initialize()
+
+    # 3. Initialize Execution (Connect to Broker)
     await execution_engine.initialize()
 
-    # 3. Initialize Risk System (Sync PnL, Load Config)
+    # 4. Initialize Risk System
     await risk_manager.initialize()
 
-    # 4. Start Data Feed (Background Task)
-    # The feed runs forever, reconnecting automatically
+    # 5. Start Data Feed (Background Task)
     feed_task = asyncio.create_task(market_feed.connect())
 
-    # 5. Initialize Strategy Engine (Load Strategies from DB but don't start trading yet)
+    # 6. Initialize Strategy Engine
     await strategy_engine.initialize()
 
     logger.info("✅ System Ready. Waiting for Start Signal via API.")
@@ -53,7 +58,8 @@ async def lifespan(app: FastAPI):
         # 1. Stop Strategies
         await strategy_engine.stop()
 
-        # 2. Stop Feed (Cancel the task)
+        # 2. Stop Feed
+        market_feed._stop_event.set()  # Signal stop
         feed_task.cancel()
         try:
             await feed_task
@@ -74,6 +80,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="NeoPulse", description="High-Frequency Algorithmic Trading Platform", version="2.0.0", lifespan=lifespan
+)
+
+# Enable CORS (Good practice for local dashboards/Postman)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(api_router, prefix="/api/v1")
