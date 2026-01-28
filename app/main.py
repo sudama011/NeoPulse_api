@@ -8,12 +8,11 @@ from fastapi import FastAPI
 from app.api.v1.router import api_router
 from app.core.executors import global_executor
 from app.core.logger import setup_logging
-from app.data.engine import data_engine
+from app.data.feed import market_feed
 from app.execution.engine import execution_engine
 from app.risk.manager import risk_manager
 from app.strategy.engine import strategy_engine
 
-# Setup Logging
 setup_logging()
 logger = logging.getLogger("API")
 
@@ -22,63 +21,61 @@ logger = logging.getLogger("API")
 async def lifespan(app: FastAPI):
     """
     Application Lifecycle Management.
-
-    Startup: Restore bot state from DB
-    Shutdown: Gracefully close all positions with timeout
     """
     # --- STARTUP ---
     logger.info("🌐 NeoPulse API Starting...")
 
-    # 0. Start Thread Pool
+    # 1. Start Thread Pool (Infrastructure)
     global_executor.start()
 
-    # 1. Start Execution (Connects Broker)
+    # 2. Initialize Execution (Connect to Broker)
+    # This ensures we have a valid session before strategies try to sync positions
     await execution_engine.initialize()
 
-    # 2. Start Data (Loads Tokens, Connects Socket)
-    await data_engine.initialize()
-
-    # 3. Start Risk
+    # 3. Initialize Risk System (Sync PnL, Load Config)
     await risk_manager.initialize()
 
-    logger.info("🛑 Bot is currently STOPPED. Use POST /api/v1/engine/start to launch.")
+    # 4. Start Data Feed (Background Task)
+    # The feed runs forever, reconnecting automatically
+    feed_task = asyncio.create_task(market_feed.connect())
 
-    yield  # Application runs here
+    # 5. Initialize Strategy Engine (Load Strategies from DB but don't start trading yet)
+    await strategy_engine.initialize()
 
-    # --- SHUTDOWN (Graceful) ---
+    logger.info("✅ System Ready. Waiting for Start Signal via API.")
+
+    yield  # API requests handled here
+
+    # --- SHUTDOWN ---
     logger.info("🛑 API Stopping... Initiating graceful shutdown.")
 
     try:
-        # Set timeout for graceful shutdown
-        async with asyncio.timeout(10):  # 10 second timeout
-            if strategy_engine.is_running:
-                strategy_engine.is_running = False
-                logger.info("📊 Closing all open positions...")
-                await strategy_engine.square_off_all()
+        # 1. Stop Strategies
+        await strategy_engine.stop()
 
-                # Wait for orders to be processed
-                await asyncio.sleep(1)
+        # 2. Stop Feed (Cancel the task)
+        feed_task.cancel()
+        try:
+            await feed_task
+        except asyncio.CancelledError:
+            pass
 
-            # Close DB connections
-            from app.db.session import engine
+        # 3. Close DB / ThreadPool
+        from app.db.session import engine
 
-            await engine.dispose()
-
-        # STOP Thread Pool (Last thing to stop)
+        await engine.dispose()
         global_executor.stop()
 
-    except asyncio.TimeoutError:
-        logger.critical("❌ Shutdown timeout exceeded! Forcing termination.")
     except Exception as e:
         logger.error(f"❌ Error during shutdown: {e}")
     finally:
-        logger.info("✅ Shutdown Complete.")
+        logger.info("👋 Shutdown Complete.")
 
 
-# Initialize App
-app = FastAPI(title="NeoPulse", description="Algorithmic Trading Control Plane", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="NeoPulse", description="High-Frequency Algorithmic Trading Platform", version="2.0.0", lifespan=lifespan
+)
 
-# Include the V1 Router
 app.include_router(api_router, prefix="/api/v1")
 
 if __name__ == "__main__":

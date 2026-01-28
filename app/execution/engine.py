@@ -118,7 +118,7 @@ class ExecutionEngine:
                 # Small delay to prevent rate limit spam
                 await asyncio.sleep(0.2)
             else:
-                logger.error(f"❌ Iceberg Leg {i+1} Failed! Stopping chain.")
+                logger.error(f"❌ Iceberg Leg {i + 1} Failed! Stopping chain.")
                 errors.append(resp.error_message)
                 break
 
