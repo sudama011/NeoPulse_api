@@ -45,3 +45,7 @@ postgres_data/
 # --- Logs ---
 *.log
 logs/
+
+# --- Tests ---
+.pytest_cache/
+.coverage

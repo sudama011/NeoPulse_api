@@ -24,7 +24,7 @@ async def test_kill_switch_activation(sentinel):
         "data": [
             {
                 "instrumentToken": "111", 
-                "realizedPNL": "-950.0",   # Gross PnL
+                "realizedPNL": "-960.0",   # Gross PnL
                 "buyAmt": "50000",         # Turnover for Tax Calc
                 "sellAmt": "50000"
             }
@@ -39,13 +39,12 @@ async def test_kill_switch_activation(sentinel):
         await sentinel.sync_state()
         
         # Verify Logic
-        assert sentinel.gross_pnl == -950.0
+        assert sentinel.gross_pnl == -960.0
         # Turnover = 100k. Tax approx 0.05% = ~50. 
-        assert sentinel.net_pnl < -950.0 
+        assert sentinel.net_pnl <= -1000.0
         
         # CRITICAL CHECK
         assert sentinel.config.kill_switch_active is True
-        print(f"✅ Kill Switch Activated at Net PnL: {sentinel.net_pnl}")
 
 @pytest.mark.asyncio
 async def test_concurrency_limit(sentinel):
