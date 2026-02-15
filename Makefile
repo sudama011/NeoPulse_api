@@ -103,11 +103,11 @@ lint: ## Run all linting checks
 
 lint-fix: ## Fix auto-fixable linting issues
 	@echo "$(BLUE)🔧 Fixing linting issues...$(RESET)"
-	$(BIN)/autopep8 --in-place --recursive --aggressive app backtest tests scripts
+	$(BIN)/autopep8 --in-place --recursive --aggressive app backtest tests
 	@echo "$(GREEN)✅ Auto-fixable issues resolved$(RESET)"
 
 format: ## Format code with black and isort
 	@echo "$(BLUE)🎨 Formatting code...$(RESET)"
 	$(BIN)/black app backtest tests scripts
-	$(BIN)/isort app backtest tests scripts
+	$(BIN)/isort app backtest tests
 	@echo "$(GREEN)✅ Code formatting completed$(RESET)"

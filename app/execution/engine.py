@@ -45,14 +45,15 @@ class ExecutionEngine:
         # 2. FETCH DATA
         inst_data = self.master_data.get_data(symbol)
         freeze_qty = inst_data.get("freeze_qty", 1800) if inst_data else 1800
+        segment = inst_data.get("segment", "nse_cm") if inst_data else "nse_cm"
 
         # 3. ROUTE (Standard vs Iceberg)
         if quantity > freeze_qty:
-            return await self._execute_iceberg(symbol, token, side, quantity, price, freeze_qty, tag)
+            return await self._execute_iceberg(symbol, token, side, quantity, price, freeze_qty, segment, tag)
         else:
-            return await self._send_single_order(symbol, token, side, quantity, price, tag)
+            return await self._send_single_order(symbol, token, side, quantity, price, segment, tag)
 
-    async def _send_single_order(self, symbol, token, side, qty, price, tag) -> OrderResponse:
+    async def _send_single_order(self, symbol, token, side, qty, price, segment, tag) -> OrderResponse:
         """
         Executes a single atomic order with DB persistence.
         """
@@ -80,7 +81,7 @@ class ExecutionEngine:
 
         # B. BROKER EXECUTION
         params = {
-            "exchange_segment": "nse_cm",
+            "exchange_segment": segment,
             "trading_symbol": symbol,
             "instrument_token": token,
             "transaction_type": "B" if side.upper() == "BUY" else "S",
@@ -151,7 +152,7 @@ class ExecutionEngine:
             except Exception as e:
                 logger.error(f"❌ DB Error (Post-Order): {e}")
 
-    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit, tag) -> OrderResponse:
+    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit, segment, tag) -> OrderResponse:
         """
         Smart Iceberg: Aggregates results of multiple legs.
         """
@@ -167,7 +168,7 @@ class ExecutionEngine:
             leg_qty = min(remaining, freeze_limit)
 
             # Execute Leg
-            resp = await self._send_single_order(symbol, token, side, leg_qty, price, f"{tag}_ICE_{i+1}")
+            resp = await self._send_single_order(symbol, token, side, leg_qty, price, segment, f"{tag}_ICE_{i+1}")
 
             if resp.status == OrderStatus.COMPLETE:
                 filled_so_far += leg_qty

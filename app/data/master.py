@@ -68,6 +68,7 @@ class MasterDataManager:
                     "lot_size": i.lot_size or 1,
                     "tick_size": i.tick_size or 0.05,
                     "freeze_qty": i.freeze_qty or 1800,  # Default high if missing
+                    "segment": i.segment or "nse_cm",
                     "upper_band": i.upper_band,
                     "lower_band": i.lower_band,
                 }
