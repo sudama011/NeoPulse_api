@@ -106,5 +106,6 @@ class RiskManager:
     async def on_trade_close(self, pnl: float):
         await self.sentinel.update_post_trade_close(pnl)
 
+
 # Global Instance
 risk_manager = RiskManager()

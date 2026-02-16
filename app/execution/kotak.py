@@ -60,7 +60,6 @@ class KotakNeoAdapter(BrokerAdapter):
                 amo="NO",
             )
 
-     
             await notification_manager.notify_trade(
                 order_params.get("trading_symbol"),
                 order_params.get("transaction_type"),
@@ -68,7 +67,6 @@ class KotakNeoAdapter(BrokerAdapter):
                 order_params.get("price"),
                 order_params.get("tag", "Strategy"),
             )
-            
 
             return response
 

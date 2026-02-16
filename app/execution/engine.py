@@ -152,7 +152,9 @@ class ExecutionEngine:
             except Exception as e:
                 logger.error(f"❌ DB Error (Post-Order): {e}")
 
-    async def _execute_iceberg(self, symbol, token, side, total_qty, price, freeze_limit, segment, tag) -> OrderResponse:
+    async def _execute_iceberg(
+        self, symbol, token, side, total_qty, price, freeze_limit, segment, tag
+    ) -> OrderResponse:
         """
         Smart Iceberg: Aggregates results of multiple legs.
         """

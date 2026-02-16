@@ -3,7 +3,6 @@ import asyncio
 import os
 import sys
 
-
 # Add project root to path so we can import 'app'
 sys.path.append(os.getcwd())
 

@@ -2,14 +2,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.strategy.base import BaseStrategy
 from app.strategy.engine import StrategyEngine
 from app.strategy.strategies import MACDVolumeStrategy
-from app.strategy.base import BaseStrategy
+
 
 # A dummy strategy for testing
 class MockStrategy(BaseStrategy):
     async def on_tick(self, tick):
         pass
+
 
 @pytest.mark.asyncio
 async def test_engine_initialization():
@@ -58,29 +60,32 @@ async def test_engine_lifecycle():
         assert engine._running is False
         assert len(engine.tasks) == 0
 
+
 @pytest.mark.asyncio
 async def test_strategy_buy_order(mock_broker):
     """Test that calling buy() sends correct params to Broker."""
-    
+
     strategy = MockStrategy(name="TestStrat", symbol="RELIANCE", token="2885")
-    
+
     # We patch the 'execution_engine.broker' to be our mock
-    with patch("app.execution.engine.execution_engine.broker", mock_broker), \
-         patch("app.execution.engine.execution_engine.risk_manager") as mock_risk:
-        
+    with (
+        patch("app.execution.engine.execution_engine.broker", mock_broker),
+        patch("app.execution.engine.execution_engine.risk_manager") as mock_risk,
+    ):
+
         # Bypass risk check
         mock_risk.can_trade = AsyncMock(return_value=True)
-        
+
         # EXECUTE
         await strategy.buy(price=2500.0, qty=10, tag="TEST_ENTRY")
-        
+
         # VERIFY
         mock_broker.place_order.assert_called_once()
         call_args = mock_broker.place_order.call_args[0][0]
-        
+
         assert call_args["transaction_type"] == "B"
         assert call_args["quantity"] == 10
         assert call_args["price"] == 2500.0
         assert call_args["trading_symbol"] == "RELIANCE"
-        
+
         print("✅ Buy Order successfully routed to Broker Adapter")
