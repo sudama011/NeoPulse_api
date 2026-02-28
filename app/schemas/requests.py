@@ -11,7 +11,7 @@ logger = logging.getLogger("RequestSchema")
 class StartRequest(BaseModel):
     capital: float = Field(default=100000.0, gt=0, le=10_000_000, description="Allocated Trading Capital")
     symbols: list[str] = Field(..., min_length=1, max_length=50)
-    strategy: Literal["GENERIC", "MOMENTUM", "MEAN_REVERSION", "ORB", "RULE_ENGINE"] = "MOMENTUM"
+    strategy: str = Field(default="MACD_VOLUME", description="Strategy name from registry (e.g., MACD_VOLUME, GENERIC)")
     leverage: float = Field(default=1.0, ge=1.0, le=5.0)
 
     # Risk Limits

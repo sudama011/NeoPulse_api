@@ -46,8 +46,10 @@ class MarketFeed:
                 ticks = message["data"]
 
             # Debug Log (Optional)
-            if ticks:
-                logger.info(f"📨 RAW TICK: {str(ticks[0])[:200]}...")
+            if message:
+                # print full message without ...
+                logger.info(f"📨 RAW TICKS: {json.dumps(message, indent=2)}")
+                # logger.info(f"📨 RAW TICKS: {str(message)}...")
 
         except Exception:
             return

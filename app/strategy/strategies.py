@@ -2,12 +2,15 @@ import logging
 from collections import deque
 from typing import Any, Dict
 
+from app.strategy import register_strategy
 from app.strategy.base import BaseStrategy
 from app.strategy.toolbox import tb
 
 logger = logging.getLogger("Strategies")
 
 
+@register_strategy("MACD_VOLUME")
+@register_strategy("MOMENTUM")
 class MACDVolumeStrategy(BaseStrategy):
     """
     Production-Grade Intraday Strategy.

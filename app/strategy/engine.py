@@ -7,8 +7,8 @@ from sqlalchemy import select
 from app.data.stream import data_stream
 from app.db.session import AsyncSessionLocal
 from app.models.config import SystemConfig
+from app.strategy import get_strategy_class, list_strategies
 from app.strategy.base import BaseStrategy
-from app.strategy.strategies import MACDVolumeStrategy
 
 logger = logging.getLogger("StrategyEngine")
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("StrategyEngine")
 class StrategyEngine:
     """
     The Orchestrator.
-    - Loads strategies from DB.
+    - Loads strategies from DB using the Strategy Registry.
     - Runs each strategy in an isolated Async Task.
     - Handles graceful shutdown.
     """
@@ -28,25 +28,34 @@ class StrategyEngine:
 
     async def initialize(self):
         """
-        Load strategies from database configuration.
+        Load strategies from database configuration using the registry.
         """
-        logger.info("🧠 Strategy Engine: Initializing...")
+        logger.info(f"🧠 Strategy Engine: Initializing... Available strategies: {list_strategies()}")
+
         async with AsyncSessionLocal() as session:
-            # Fetch active strategy config
             result = await session.execute(select(SystemConfig).where(SystemConfig.key == "strategy_config"))
             config = result.scalars().first()
 
             if config and config.symbols:
                 # Expected JSON in DB:
                 # {"SYMBOLS": [{"name": "RELIANCE", "token": "738561", "params": {"ema_period": 200}}]}
+                strategy_type = config.strategy_name or "MACD_VOLUME"
                 symbols_config = config.symbols.get("SYMBOLS", [])
 
                 for s in symbols_config:
-                    # Create Strategy Object (1 per Symbol)
-                    strategy = MACDVolumeStrategy(
-                        name=f"MACD_{s['name']}", symbol=s["name"], token=s["token"], params=s.get("params", {})
-                    )
-                    self.add_strategy(strategy)
+                    try:
+                        # Use registry to create strategy
+                        st_type = s.get("strategy_type", strategy_type)
+                        strategy_cls = get_strategy_class(st_type)
+                        strategy = strategy_cls(
+                            name=f"{st_type}_{s['name']}",
+                            symbol=s["name"],
+                            token=s["token"],
+                            params=s.get("params", {}),
+                        )
+                        self.add_strategy(strategy)
+                    except ValueError as e:
+                        logger.error(f"❌ {e}")
             else:
                 logger.warning("⚠️ No Strategy Config found in DB. Engine Idle.")
 

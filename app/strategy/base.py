@@ -1,7 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
+from collections import deque
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.execution.engine import execution_engine
 from app.execution.kotak import kotak_adapter
@@ -19,7 +20,12 @@ class BaseStrategy(ABC):
     - Auto-Reconciliation: Syncs with Broker on startup.
     - Smart Risk Checks: Auto-detects Entry vs. Exit to prevent blocking critical stops.
     - Crash Protection: Catches logic errors to keep the engine running.
+    - Dual-Mode: Works with both live ticks (on_tick) and backtest candles (on_candle).
+    - Candle Buffer: Maintains rolling history for indicator calculations.
     """
+
+    # Default warmup period — subclasses can override
+    WARMUP_PERIOD: int = 50
 
     def __init__(self, name: str, symbol: str, token: str, params: Dict[str, Any] = None):
         self.name = name
@@ -33,9 +39,16 @@ class BaseStrategy(ABC):
         self.is_active = True
         self.last_trade_time: Optional[datetime] = None
 
+        # Candle Buffer (for indicator calculations in both modes)
+        self._max_history = params.get("max_history", 500) if params else 500
+        self.candles: deque = deque(maxlen=self._max_history)
+
         # Crash Protection
         self._error_count = 0
         self._max_errors_before_stop = 5
+
+        # Backtest mode flag (set by backtest engine)
+        self._backtest_mode = False
 
     async def initialize(self):
         """Lifecycle hook: Called by Engine before ticks start."""
@@ -85,6 +98,23 @@ class BaseStrategy(ABC):
         """Core Logic: Must be implemented by child strategy."""
         pass
 
+    async def on_candle(self, candle: Dict[str, Any]):
+        """
+        Called with a complete OHLCV candle (backtest or candle-aggregated live).
+        Default: appends to history and delegates to on_tick with LTP = close.
+        Override this in subclasses for candle-based logic.
+        """
+        self.candles.append(candle)
+
+        # Convert candle to a tick-like dict so on_tick works
+        tick = {
+            "ltp": candle["close"],
+            "volume": candle.get("volume", 0),
+            "_ohlc": {"high": candle["high"], "low": candle["low"]},
+            "_candle": candle,
+        }
+        await self.on_tick(tick)
+
     async def safe_on_tick(self, tick: Dict[str, Any]):
         """Wrapper to prevent one bad math operation from killing the strategy loop."""
         try:
@@ -93,6 +123,19 @@ class BaseStrategy(ABC):
         except Exception as e:
             self._error_count += 1
             logger.error(f"🔥 {self.name} LOGIC ERROR: {e}", exc_info=True)
+
+            if self._error_count >= self._max_errors_before_stop:
+                logger.critical(f"⛔ {self.name}: Too many errors ({self._error_count}). Disabling Strategy.")
+                self.is_active = False
+
+    async def safe_on_candle(self, candle: Dict[str, Any]):
+        """Protected candle handler for backtest engine."""
+        try:
+            await self.on_candle(candle)
+            self._error_count = 0
+        except Exception as e:
+            self._error_count += 1
+            logger.error(f"🔥 {self.name} CANDLE ERROR: {e}", exc_info=True)
 
             if self._error_count >= self._max_errors_before_stop:
                 logger.critical(f"⛔ {self.name}: Too many errors ({self._error_count}). Disabling Strategy.")

@@ -1,7 +1,219 @@
+import logging
+import math
+from collections import deque
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("Toolbox")
+
+# =========================================
+# 1. STREAMING INDICATORS (LIVE TRADING - O(1))
+# =========================================
+
+
+class StreamingEMA:
+    def __init__(self, period: int):
+        self.period = period
+        self.k = 2 / (period + 1)
+        self.value = None
+
+    def update(self, price: float) -> float:
+        if self.value is None:
+            self.value = price
+        else:
+            self.value = (price * self.k) + (self.value * (1 - self.k))
+        return self.value
+
+
+class StreamingSMA:
+    """Simple Moving Average (O(1) update using Ring Buffer)"""
+
+    def __init__(self, period: int):
+        self.period = period
+        self.buffer = deque(maxlen=period)
+        self.sum = 0.0
+
+    def update(self, price: float) -> float:
+        if math.isnan(price):
+            return 0.0
+
+        self.buffer.append(price)
+        self.sum += price
+
+        if len(self.buffer) > self.period:
+            removed = self.buffer.popleft()
+            self.sum -= removed
+
+        # If buffer isn't full, return partial average or 0 based on preference
+        if len(self.buffer) < self.period:
+            return self.sum / len(self.buffer)
+
+        return self.sum / self.period
+
+
+class StreamingRSI:
+    """Relative Strength Index (Wilder's Smoothing)"""
+
+    def __init__(self, period: int = 14):
+        self.period = period
+        self.prev_price = None
+        self.avg_gain = 0.0
+        self.avg_loss = 0.0
+        self.initialized = False
+        self.warmup_count = 0
+
+    def update(self, price: float) -> float:
+        if self.prev_price is None:
+            self.prev_price = price
+            return 50.0  # Neutral on first tick
+
+        change = price - self.prev_price
+        self.prev_price = price
+
+        gain = max(change, 0.0)
+        loss = max(-change, 0.0)
+
+        if not self.initialized:
+            # Simple Average for the first 'period'
+            self.avg_gain += gain
+            self.avg_loss += loss
+            self.warmup_count += 1
+
+            if self.warmup_count >= self.period:
+                self.avg_gain /= self.period
+                self.avg_loss /= self.period
+                self.initialized = True
+        else:
+            # Wilder's Smoothing (alpha = 1/period)
+            self.avg_gain = ((self.avg_gain * (self.period - 1)) + gain) / self.period
+            self.avg_loss = ((self.avg_loss * (self.period - 1)) + loss) / self.period
+
+        if self.avg_loss == 0:
+            return 100.0 if self.avg_gain > 0 else 50.0
+
+        rs = self.avg_gain / self.avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+
+class StreamingMACD:
+    """MACD (12, 26, 9) Composition"""
+
+    def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9):
+        self.fast_ema = StreamingEMA(fast)
+        self.slow_ema = StreamingEMA(slow)
+        self.signal_ema = StreamingEMA(signal)
+
+    def update(self, price: float) -> Tuple[float, float, float]:
+        """Returns (macd_line, signal_line, histogram)"""
+        f = self.fast_ema.update(price)
+        s = self.slow_ema.update(price)
+
+        macd_line = f - s
+        signal_line = self.signal_ema.update(macd_line)
+        hist = macd_line - signal_line
+
+        return macd_line, signal_line, hist
+
+
+class StreamingATR:
+    """Average True Range (RMA Smoothing)"""
+
+    def __init__(self, period: int = 14):
+        self.period = period
+        self.prev_close = None
+        self.atr = 0.0
+        self.initialized = False
+        self.warmup_count = 0
+
+    def update(self, high: float, low: float, close: float) -> float:
+        if self.prev_close is None:
+            self.prev_close = close
+            return high - low
+
+        tr1 = high - low
+        tr2 = abs(high - self.prev_close)
+        tr3 = abs(low - self.prev_close)
+        tr = max(tr1, tr2, tr3)
+
+        self.prev_close = close
+
+        if not self.initialized:
+            self.atr += tr
+            self.warmup_count += 1
+            if self.warmup_count >= self.period:
+                self.atr /= self.period
+                self.initialized = True
+        else:
+            # RMA (Pine Script Standard for ATR)
+            alpha = 1.0 / self.period
+            self.atr = (self.atr * (1 - alpha)) + (tr * alpha)
+
+        return self.atr
+
+
+class StreamingSupertrend:
+    """Stateful Supertrend"""
+
+    def __init__(self, period: int = 10, factor: float = 3.0):
+        self.atr_ind = StreamingATR(period)
+        self.factor = factor
+        self.period = period
+
+        # State
+        self.final_upper = 0.0
+        self.final_lower = 0.0
+        self.trend = 1  # 1 = Up, -1 = Down
+        self.prev_close = 0.0
+        self.initialized = False
+
+    def update(self, high: float, low: float, close: float) -> Tuple[float, int]:
+        atr = self.atr_ind.update(high, low, close)
+
+        if not self.atr_ind.initialized:
+            self.prev_close = close
+            return 0.0, 1
+
+        hl2 = (high + low) / 2
+        basic_upper = hl2 + (self.factor * atr)
+        basic_lower = hl2 - (self.factor * atr)
+
+        # Initialize bands on first run
+        if not self.initialized:
+            self.final_upper = basic_upper
+            self.final_lower = basic_lower
+            self.initialized = True
+            self.prev_close = close
+            return basic_lower, 1
+
+        # Update Upper Band
+        if basic_upper < self.final_upper or self.prev_close > self.final_upper:
+            self.final_upper = basic_upper
+        # Else keep previous (no change needed as self.final_upper persists)
+
+        # Update Lower Band
+        if basic_lower > self.final_lower or self.prev_close < self.final_lower:
+            self.final_lower = basic_lower
+
+        # Update Trend
+        # Note: We use self.trend from PREVIOUS step to determine switch
+        if self.trend == 1:
+            if close < self.final_lower:
+                self.trend = -1
+        else:
+            if close > self.final_upper:
+                self.trend = 1
+
+        self.prev_close = close
+
+        val = self.final_lower if self.trend == 1 else self.final_upper
+        return val, self.trend
+
+
+# =========================================
+# 2. STATIC TOOLBOX (BACKTESTING / UTILS)
+# =========================================
 
 
 class Toolbox:
