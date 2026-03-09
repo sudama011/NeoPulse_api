@@ -64,7 +64,8 @@ class PerformanceAnalyst:
             return {"error": "No trades executed.", "total_trades": 0}
 
         # --- 1. Equity Curve ---
-        self.trades["equity"] = self.trades["balance_after"]
+        equity_col = "equity_after" if "equity_after" in self.trades.columns else "balance_after"
+        self.trades["equity"] = self.trades[equity_col]
         final_equity = float(self.trades.iloc[-1]["equity"])
         total_return = final_equity - self.initial_capital
         return_pct = (total_return / self.initial_capital) * 100

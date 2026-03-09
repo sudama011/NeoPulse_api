@@ -59,25 +59,26 @@ class ExecutionEngine:
         """
         internal_id = uuid.uuid4()
 
-        # A. PRE-ORDER PERSISTENCE (Audit Trail)
-        async with AsyncSessionLocal() as session:
-            try:
-                ledger_entry = OrderLedger(
-                    internal_id=internal_id,
-                    token=int(token),
-                    transaction_type=side,
-                    quantity=qty,
-                    price=price,
-                    order_type="L" if price > 0 else "MKT",
-                    product="MIS",
-                    status="PENDING_BROKER",
-                    strategy_id=tag,
-                )
-                session.add(ledger_entry)
-                await session.commit()
-            except Exception as e:
-                logger.error(f"❌ DB Error (Pre-Order): {e}")
-                # We do NOT abort trade on DB error, but we log critically
+        # A. PRE-ORDER PERSISTENCE (Audit Trail) — skip during backtest
+        if not getattr(self.broker, "is_backtest", False):
+            async with AsyncSessionLocal() as session:
+                try:
+                    ledger_entry = OrderLedger(
+                        internal_id=internal_id,
+                        token=int(token),
+                        transaction_type=side,
+                        quantity=qty,
+                        price=price,
+                        order_type="L" if price > 0 else "MKT",
+                        product="MIS",
+                        status="PENDING_BROKER",
+                        strategy_id=tag,
+                    )
+                    session.add(ledger_entry)
+                    await session.commit()
+                except Exception as e:
+                    logger.error(f"❌ DB Error (Pre-Order): {e}")
+                    # We do NOT abort trade on DB error, but we log critically
 
         # B. BROKER EXECUTION
         params = {
@@ -127,9 +128,10 @@ class ExecutionEngine:
             await self.risk_manager.on_execution_failure()
             response_obj = OrderResponse(order_id="NA", status=OrderStatus.FAILED, error_message=str(e))
 
-        # C. POST-ORDER UPDATE
-        # We fire-and-forget this update so we don't block the strategy loop
-        asyncio.create_task(self._update_ledger(internal_id, response_obj))
+        # C. POST-ORDER UPDATE — skip during backtest
+        if not getattr(self.broker, "is_backtest", False):
+            # We fire-and-forget this update so we don't block the strategy loop
+            asyncio.create_task(self._update_ledger(internal_id, response_obj))
 
         return response_obj
 

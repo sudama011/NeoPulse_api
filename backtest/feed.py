@@ -29,7 +29,14 @@ class HistoricalFeed:
         try:
             end = datetime.now()
             start = end - timedelta(days=self.days)
-            df = yf.download(ticker, start=start, end=end, interval=self.interval, progress=False)
+            df = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                interval=self.interval,
+                auto_adjust=False,  # prevent adjusted prices changing OHLC semantics
+                progress=False,
+            )
 
             if df.empty:
                 logger.error("❌ No data received from Yahoo Finance.")
