@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.data.stream import data_stream
 from app.db.session import AsyncSessionLocal
-from app.models.config import SystemConfig
+from app.models.strategy import StrategyInstance
 from app.strategy import get_strategy_class, list_strategies
 from app.strategy.base import BaseStrategy
 
@@ -28,36 +28,36 @@ class StrategyEngine:
 
     async def initialize(self):
         """
-        Load strategies from database configuration using the registry.
+        Load active strategy instances from database using the registry.
         """
         logger.info(f"🧠 Strategy Engine: Initializing... Available strategies: {list_strategies()}")
 
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(SystemConfig).where(SystemConfig.key == "strategy_config"))
-            config = result.scalars().first()
+            # Load all active strategy instances
+            result = await session.execute(select(StrategyInstance).where(StrategyInstance.is_active == True))
+            instances = result.scalars().all()
 
-            if config and config.symbols:
-                # Expected JSON in DB:
-                # {"SYMBOLS": [{"name": "RELIANCE", "token": "738561", "params": {"ema_period": 200}}]}
-                strategy_type = config.strategy_name or "MACD_VOLUME"
-                symbols_config = config.symbols.get("SYMBOLS", [])
-
-                for s in symbols_config:
+            if instances:
+                for inst in instances:
                     try:
                         # Use registry to create strategy
-                        st_type = s.get("strategy_type", strategy_type)
-                        strategy_cls = get_strategy_class(st_type)
+                        strategy_cls = get_strategy_class(inst.strategy_type)
                         strategy = strategy_cls(
-                            name=f"{st_type}_{s['name']}",
-                            symbol=s["name"],
-                            token=s["token"],
-                            params=s.get("params", {}),
+                            name=inst.instance_name,
+                            symbol=inst.symbol,
+                            token=inst.token,
+                            params={},
+                            leverage=inst.leverage,
                         )
                         self.add_strategy(strategy)
+                        logger.info(
+                            f"✅ Loaded: {inst.instance_name} ({inst.strategy_type} on {inst.symbol}, "
+                            f"leverage={inst.leverage}x, sizing={inst.sizing_method})"
+                        )
                     except ValueError as e:
-                        logger.error(f"❌ {e}")
+                        logger.error(f"❌ Failed to load {inst.instance_name}: {e}")
             else:
-                logger.warning("⚠️ No Strategy Config found in DB. Engine Idle.")
+                logger.warning("⚠️ No active strategy instances found in DB. Engine Idle.")
 
     def add_strategy(self, strategy: BaseStrategy):
         self.active_strategies[strategy.token] = strategy
@@ -104,7 +104,7 @@ class StrategyEngine:
         logger.info(f"🚀 Strategy Engine: Launching {len(self.active_strategies)} Strategies...")
 
         # Spawn tasks
-        for token, strategy in self.active_strategies.items():
+        for strategy in self.active_strategies.values():
             task = asyncio.create_task(self._run_strategy_loop(strategy))
             self.tasks.append(task)
 

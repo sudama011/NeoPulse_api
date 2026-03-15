@@ -14,8 +14,8 @@ from app.risk.manager import risk_manager as global_risk_manager
 from app.strategy import get_strategy_class, list_strategies
 from app.strategy.base import BaseStrategy
 from backtest.analyst import PerformanceAnalyst
-from backtest.plotter import plot_backtest, plot_backtest_interactive
 from backtest.feed import HistoricalFeed
+from backtest.plotter import plot_backtest, plot_backtest_interactive
 from backtest.simulator import BacktestBroker
 
 logger = logging.getLogger("BacktestEngine")
@@ -121,17 +121,19 @@ class BacktestEngine:
                 eq = float(getattr(self.broker, "balance", self.broker.initial_capital))
                 for sym, q in getattr(self.broker, "positions", {}).items():
                     eq += float(q) * last_close
-                self.broker.orders.append({
-                    "time": last_ts,
-                    "symbol": self.symbol,
-                    "side": "MARK",
-                    "qty": 0,
-                    "price": last_close,
-                    "value": 0.0,
-                    "balance_after": eq,
-                    "equity_after": eq,
-                    "position_after": getattr(self.broker, "positions", {}).get(self.symbol, 0),
-                })
+                self.broker.orders.append(
+                    {
+                        "time": last_ts,
+                        "symbol": self.symbol,
+                        "side": "MARK",
+                        "qty": 0,
+                        "price": last_close,
+                        "value": 0.0,
+                        "balance_after": eq,
+                        "equity_after": eq,
+                        "position_after": getattr(self.broker, "positions", {}).get(self.symbol, 0),
+                    }
+                )
             except Exception:
                 pass
 

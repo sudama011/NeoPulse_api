@@ -46,15 +46,17 @@ class PerformanceAnalyst:
                 pnl = (row["price"] - entry["price"]) * entry["qty"]
                 pnl_pct = ((row["price"] - entry["price"]) / entry["price"]) * 100
 
-                paired.append({
-                    "entry_time": entry["time"],
-                    "exit_time": row["time"],
-                    "entry_price": entry["price"],
-                    "exit_price": row["price"],
-                    "qty": entry["qty"],
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
-                })
+                paired.append(
+                    {
+                        "entry_time": entry["time"],
+                        "exit_time": row["time"],
+                        "entry_price": entry["price"],
+                        "exit_price": row["price"],
+                        "qty": entry["qty"],
+                        "pnl": round(pnl, 2),
+                        "pnl_pct": round(pnl_pct, 2),
+                    }
+                )
 
         return pd.DataFrame(paired) if paired else pd.DataFrame()
 
@@ -106,7 +108,9 @@ class PerformanceAnalyst:
 
         # --- 4. Risk-Adjusted Returns ---
         # Daily returns from equity curve
-        daily_equity = equity_series.resample("D").last().dropna() if hasattr(equity_series.index, "freq") else equity_series
+        daily_equity = (
+            equity_series.resample("D").last().dropna() if hasattr(equity_series.index, "freq") else equity_series
+        )
         daily_returns = daily_equity.pct_change().dropna()
 
         sharpe_ratio = self._sharpe(daily_returns)

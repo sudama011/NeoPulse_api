@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal
 from app.execution.kotak import kotak_adapter
-from app.models.config import SystemConfig
+from app.models.strategy import TradingSession
 from app.risk.sentinel import RiskSentinel
 from app.risk.sizer import PositionSizer
 from app.schemas.common import RiskConfig
@@ -20,42 +20,47 @@ class RiskManager:
         self.sentinel = RiskSentinel(self.config)
         self.sizer = PositionSizer()
         self.is_initialized = False
-        self.leverage = 1.0
         self.total_allocated_capital = 100000.0
 
     async def initialize(self):
         """
-        Loads config from DB and syncs with Broker.
+        Loads config from active TradingSession and syncs with Broker.
         """
         logger.info("🛡️ Initializing Risk Manager...")
 
-        # 1. Load Config from DB
+        # 1. Load Config from active TradingSession
         async with AsyncSessionLocal() as session:
-            result = await session.execute(select(SystemConfig).where(SystemConfig.key == "current_state"))
-            db_config = result.scalars().first()
+            result = await session.execute(select(TradingSession).where(TradingSession.is_active == True))
+            trading_session = result.scalars().first()
 
-            if db_config:
-                # Apply DB values
-                self.config.max_daily_loss = float(db_config.max_daily_loss) if db_config.max_daily_loss else 1000.0
-                self.config.max_concurrent_trades = int(db_config.max_concurrent_trades or 3)
-                self.leverage = float(db_config.leverage) if db_config.leverage else 1.0
-                self.total_allocated_capital = float(db_config.capital) if db_config.capital else 100000.0
-
-                if db_config.risk_params:
-                    rp = db_config.risk_params
-                    self.config.risk_per_trade_pct = float(rp.get("risk_per_trade_pct", 0.01))
+            if trading_session:
+                self.config.max_daily_loss = float(trading_session.max_daily_loss)
+                self.config.max_concurrent_trades = int(trading_session.max_concurrent_trades)
+                self.total_allocated_capital = float(trading_session.capital)
 
                 logger.info(
-                    f"✅ Risk Config Loaded: Cap={self.total_allocated_capital}, MaxLoss={self.config.max_daily_loss}"
+                    f"✅ Risk Config Loaded from Session {trading_session.id}: "
+                    f"Cap={self.total_allocated_capital}, MaxLoss={self.config.max_daily_loss}"
                 )
+            else:
+                logger.warning("⚠️ No active TradingSession found. Using default risk config.")
 
         # 2. Sync State with Broker
         await self.sentinel.sync_state()
         self.is_initialized = True
 
-    async def calculate_size(self, symbol: str, entry: float, sl: float, confidence: float = 1.0) -> int:
+    async def calculate_size(
+        self, symbol: str, entry: float, sl: float, confidence: float = 1.0, leverage: float = 1.0
+    ) -> int:
         """
         Smart Sizing wrapper.
+
+        Args:
+            symbol: Trading symbol
+            entry: Entry price
+            sl: Stop loss price
+            confidence: Confidence multiplier (0.5 to 2.0)
+            leverage: Strategy-specific leverage
         """
         from app.data.master import master_data  # Lazy import
 
@@ -90,7 +95,7 @@ class RiskManager:
             lot_size=lot_size,
             confidence=confidence,
             risk_per_trade_pct=self.config.risk_per_trade_pct,
-            leverage=self.leverage,
+            leverage=leverage,
         )
 
     async def can_trade(self, symbol: str, qty: int, price: float) -> bool:

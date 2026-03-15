@@ -8,7 +8,9 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
 )
@@ -18,26 +20,49 @@ from sqlalchemy.sql import func, text
 from app.models.base import Base
 
 
+class TradingSession(Base):
+    """
+    Minimal session metadata - just capital allocation and limits.
+    """
+
+    __tablename__ = "trading_session"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    is_active = Column(Boolean, default=False, index=True)
+
+    # Capital & Limits
+    capital = Column(Numeric(12, 2), nullable=False)
+    max_daily_loss = Column(Float, default=2000.0)
+    max_concurrent_trades = Column(Integer, default=5)
+
+    # Audit
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class StrategyInstance(Base):
     """
     Persists each running strategy instance.
-    Allows the engine to restore state after a restart.
+    Links to TradingSession for capital. Risk parameters are stored directly in this table.
     """
 
     __tablename__ = "strategy_instance"
 
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    session_id = Column(UUID(as_uuid=True), ForeignKey("trading_session.id"), nullable=False, index=True)
     instance_name = Column(String(100), unique=True, nullable=False, index=True)
 
     strategy_type = Column(String(50), nullable=False)  # Registry key, e.g. "MACD_VOLUME"
     symbol = Column(String(50), nullable=False)
     token = Column(String(20), nullable=False)
 
-    # Configuration snapshot
-    params = Column(JSONB, default={})
+    # Risk Parameters
+    leverage = Column(Float, nullable=False, default=1.0)
+    sizing_method = Column(String(20), nullable=False, default="FIXED_RISK")
+    risk_per_trade_pct = Column(Float, nullable=False, default=0.01)
 
     # Runtime state
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, index=True)
     position = Column(Integer, default=0)
     avg_price = Column(DECIMAL(10, 2), default=0.0)
 
@@ -117,4 +142,3 @@ class BacktestRun(Base):
     full_report = Column(JSONB, default={})
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-

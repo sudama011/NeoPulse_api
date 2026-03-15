@@ -1,10 +1,9 @@
-import os
 import logging
+import os
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-
 
 logger = logging.getLogger("BacktestPlotter")
 
@@ -26,7 +25,8 @@ def _orders_to_index_series(df: pd.DataFrame, orders: List[Dict], side: str) -> 
     for tr in orders or []:
         if str(tr.get("side", "")).upper() != side:
             continue
-        t = tr.get("time"); p = tr.get("price")
+        t = tr.get("time")
+        p = tr.get("price")
         if t is None or pd.isna(p):
             continue
         ts = pd.to_datetime(t)
@@ -90,13 +90,19 @@ def plot_backtest(
     x = np.arange(n)
     w = 0.7  # candle body width
     for xi, (_, row) in zip(x, df.iterrows()):
-        o = float(row["open"]); h = float(row["high"]); l = float(row["low"]); c = float(row["close"])
+        o = float(row["open"])
+        h = float(row["high"])
+        l = float(row["low"])
+        c = float(row["close"])
         color = "#16a34a" if c >= o else "#dc2626"
         # Wick
         ax_price.vlines(xi, l, h, color=color, linewidth=0.8, zorder=1)
         # Body
-        y = min(o, c); height = max(abs(c - o), 1e-8)
-        rect = Rectangle((xi - w / 2, y), w, height, facecolor=color, edgecolor=color, linewidth=0.6, alpha=0.85, zorder=2)
+        y = min(o, c)
+        height = max(abs(c - o), 1e-8)
+        rect = Rectangle(
+            (xi - w / 2, y), w, height, facecolor=color, edgecolor=color, linewidth=0.6, alpha=0.85, zorder=2
+        )
         ax_price.add_patch(rect)
 
     # --- Buy/Sell markers aligned to integer x ---
@@ -106,12 +112,16 @@ def plot_backtest(
         bx = np.where(~buy_s.isna())[0]
         by = buy_s.dropna().values
         if len(bx) > 0:
-            ax_price.scatter(bx, by, marker="^", s=48, c="#16a34a", edgecolors="black", linewidths=0.5, zorder=3, label="BUY")
+            ax_price.scatter(
+                bx, by, marker="^", s=48, c="#16a34a", edgecolors="black", linewidths=0.5, zorder=3, label="BUY"
+            )
     if not sell_s.empty:
         sx = np.where(~sell_s.isna())[0]
         sy = sell_s.dropna().values
         if len(sx) > 0:
-            ax_price.scatter(sx, sy, marker="v", s=48, c="#dc2626", edgecolors="black", linewidths=0.5, zorder=3, label="SELL")
+            ax_price.scatter(
+                sx, sy, marker="v", s=48, c="#dc2626", edgecolors="black", linewidths=0.5, zorder=3, label="SELL"
+            )
 
     ax_price.set_title(title)
     ax_price.set_ylabel("Price")
@@ -132,9 +142,9 @@ def plot_backtest(
     # X tick labels sampled to avoid clutter (format timestamps)
     tick_step = max(1, n // 8)
     tick_idx = np.arange(0, n, tick_step)
-    tick_labels = [df.index[i].strftime('%Y-%m-%d %H:%M') for i in tick_idx]
+    tick_labels = [df.index[i].strftime("%Y-%m-%d %H:%M") for i in tick_idx]
     ax_macd.set_xticks(tick_idx)
-    ax_macd.set_xticklabels(tick_labels, rotation=30, ha='right')
+    ax_macd.set_xticklabels(tick_labels, rotation=30, ha="right")
 
     # Output
     os.makedirs(os.path.dirname(outfile), exist_ok=True)
@@ -170,14 +180,15 @@ def plot_backtest_interactive(
         macd_cfg.update({k: int(v) for k, v in macd_params.items() if k in macd_cfg})
     macd_df = _compute_macd_series(df["close"], **macd_cfg)
 
-    cats = [ts.strftime('%Y-%m-%d %H:%M') for ts in df.index]
+    cats = [ts.strftime("%Y-%m-%d %H:%M") for ts in df.index]
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
 
     # Price
     fig.add_trace(
         go.Candlestick(x=cats, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="Price"),
-        row=1, col=1
+        row=1,
+        col=1,
     )
 
     # Markers
@@ -185,19 +196,46 @@ def plot_backtest_interactive(
     sell_s = _orders_to_index_series(df, orders, "SELL").dropna()
     if not buy_s.empty:
         bx = [cats[i] for i in np.where(df.index.isin(buy_s.index))[0]]
-        fig.add_trace(go.Scatter(x=bx, y=buy_s.values, mode="markers", name="BUY",
-                                 marker=dict(symbol="triangle-up", size=10, color="#16a34a", line=dict(color="black", width=0.5))),
-                      row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=bx,
+                y=buy_s.values,
+                mode="markers",
+                name="BUY",
+                marker=dict(symbol="triangle-up", size=10, color="#16a34a", line=dict(color="black", width=0.5)),
+            ),
+            row=1,
+            col=1,
+        )
     if not sell_s.empty:
         sx = [cats[i] for i in np.where(df.index.isin(sell_s.index))[0]]
-        fig.add_trace(go.Scatter(x=sx, y=sell_s.values, mode="markers", name="SELL",
-                                 marker=dict(symbol="triangle-down", size=10, color="#dc2626", line=dict(color="black", width=0.5))),
-                      row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=sx,
+                y=sell_s.values,
+                mode="markers",
+                name="SELL",
+                marker=dict(symbol="triangle-down", size=10, color="#dc2626", line=dict(color="black", width=0.5)),
+            ),
+            row=1,
+            col=1,
+        )
 
     # MACD
     fig.add_trace(go.Scatter(x=cats, y=macd_df["macd"], name="MACD", line=dict(color="#2563eb", width=1)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=cats, y=macd_df["signal"], name="Signal", line=dict(color="#f59e0b", width=1)), row=2, col=1)
-    fig.add_trace(go.Bar(x=cats, y=macd_df["hist"], name="Hist", marker_color=["#16a34a" if v >= 0 else "#dc2626" for v in macd_df["hist"]]), row=2, col=1)
+    fig.add_trace(
+        go.Scatter(x=cats, y=macd_df["signal"], name="Signal", line=dict(color="#f59e0b", width=1)), row=2, col=1
+    )
+    fig.add_trace(
+        go.Bar(
+            x=cats,
+            y=macd_df["hist"],
+            name="Hist",
+            marker_color=["#16a34a" if v >= 0 else "#dc2626" for v in macd_df["hist"]],
+        ),
+        row=2,
+        col=1,
+    )
 
     fig.update_layout(
         title=title,

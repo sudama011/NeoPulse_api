@@ -20,7 +20,7 @@ class CandleBuilder:
         self.low = float("inf")
         self.close = 0.0
         self.volume = 0
-        self.last_trade_time = None 
+        self.last_trade_time = None
         self.is_dirty = False
 
     def update(self, ltp: float, volume: int, timestamp: datetime) -> Dict[str, Any] | None:

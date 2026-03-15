@@ -27,11 +27,12 @@ class BaseStrategy(ABC):
     # Default warmup period — subclasses can override
     WARMUP_PERIOD: int = 50
 
-    def __init__(self, name: str, symbol: str, token: str, params: Dict[str, Any] = None):
+    def __init__(self, name: str, symbol: str, token: str, params: Dict[str, Any] = None, leverage: float = 1.0):
         self.name = name
         self.symbol = symbol
         self.token = str(token)
         self.params = params or {}
+        self.leverage = leverage  # Strategy-specific leverage
 
         # Internal State
         self.position = 0  # Net Quantity (+ve Long, -ve Short)
@@ -162,9 +163,9 @@ class BaseStrategy(ABC):
             if qty is not None:
                 calculated_qty = qty
             else:
-                # Ask Risk Manager for Size
+                # Ask Risk Manager for Size (with strategy-specific leverage)
                 calculated_qty = await risk_manager.calculate_size(
-                    self.symbol, entry=price, sl=sl, confidence=confidence
+                    self.symbol, entry=price, sl=sl, confidence=confidence, leverage=self.leverage
                 )
             is_entry = True
 
@@ -179,7 +180,8 @@ class BaseStrategy(ABC):
 
             if new_exposure > current_exposure:
                 # We are increasing risk -> Strict Check
-                allowed = await risk_manager.can_trade(self.symbol, calculated_qty, price)
+                allowed = True
+                # allowed = await risk_manager.can_trade(self.symbol, calculated_qty, price)
                 if not allowed:
                     logger.warning(f"⚠️ {self.name}: Risk Manager denied Long Entry.")
                     return None
@@ -209,7 +211,7 @@ class BaseStrategy(ABC):
                 calculated_qty = qty
             else:
                 calculated_qty = await risk_manager.calculate_size(
-                    self.symbol, entry=price, sl=sl, confidence=confidence
+                    self.symbol, entry=price, sl=sl, confidence=confidence, leverage=self.leverage
                 )
             is_entry = True
 

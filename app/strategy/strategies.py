@@ -133,3 +133,84 @@ class MACDVolumeStrategy(BaseStrategy):
 
         except Exception as e:
             logger.error(f"❌ Error in {self.name}: {e}")
+
+
+@register_strategy("GRID_ACCUMULATOR")
+class GridAccumulatorStrategy(BaseStrategy):
+    """
+    Pine Script v6 Grid Bot Conversion.
+
+    Logic:
+    1. First Trade: Buy initial quantity.
+    2. Grid Trades: If price drops by 'grid_step', buy next quantity (Arithmetic increase).
+    3. Exit Logic: If Total Open Profit >= profit_buffer, close all positions.
+    """
+
+    def __init__(self, name: str, symbol: str, token: str, params: Dict[str, Any], leverage: float = 1.0):
+        super().__init__(name, symbol, token, params)
+
+        # --- Config (Mapped from Pine Inputs) ---
+        self.initial_lot = params.get("initial_lot", 1)  # First Trade Quantity
+        self.lot_step = params.get("lot_step", 1)  # Arithmetic Quantity Increase
+        self.grid_step = params.get("grid_step", 0.10)  # Grid Drop (₹)
+        self.profit_buffer = params.get("profit_buffer", 0.4)  # Total Profit Target (₹)
+        self.max_orders = params.get("max_orders", 50)  # Max Number of Trades
+
+        # --- State Management ---
+        self.last_entry_price = 0.0
+        self.buy_count = 0
+
+    async def on_tick(self, tick: Dict[str, Any]):
+        ltp = float(tick.get("ltp", 0.0))
+        if ltp <= 0:
+            return
+
+        # --- State Reset on Flat Position ---
+        if self.position == 0 and self.buy_count > 0:
+            self.buy_count = 0
+            self.last_entry_price = 0.0
+
+        # --- 1. EXIT LOGIC (Total Profit Based) ---
+        if self.position > 0:
+            # Calculate total floating PnL: (Current Price - Average Cost) * Total Quantity
+            current_total_pnl = (ltp - self.avg_price) * self.position
+
+            if current_total_pnl >= self.profit_buffer * self.position:
+                logger.info(f"💰 {self.name}: Target Hit! Total PnL: {current_total_pnl:.2f} >= {self.profit_buffer}")
+                await self.close_position(tag="GRID_TARGET_HIT")
+
+                # Reset state immediately after firing close
+                self.buy_count = 0
+                self.last_entry_price = 0.0
+                return  # Stop processing this tick to await execution
+
+        # --- 2. ENTRY LOGIC ---
+
+        # A. FIRST TRADE
+        if self.position == 0:
+            logger.info(f"🚀 {self.name}: Starting Grid. First Entry at {ltp}")
+            resp = await self.buy(price=ltp, qty=self.initial_lot, tag="GRID_1")
+
+            if resp:
+                self.last_entry_price = ltp
+                self.buy_count = 1
+
+        # B. GRID TRADES (Arithmetic Increase)
+        elif self.position > 0 and self.buy_count < self.max_orders:
+            # Calculate the next exact grid level
+            target_price = self.last_entry_price - self.grid_step
+
+            # Check if price has dropped to the next grid level
+            if ltp <= target_price:
+                # Arithmetic progression formula: initialLot + (buyCount * lotStep)
+                next_qty = self.initial_lot + (self.buy_count * self.lot_step)
+
+                logger.info(
+                    f"📉 {self.name}: Grid Level {self.buy_count + 1} Hit. LTP: {ltp} <= Target: {target_price:.2f}. Buying {next_qty}."
+                )
+                resp = await self.buy(price=ltp, qty=next_qty, tag=f"GRID_{self.buy_count + 1}")
+
+                if resp:
+                    # Update state to the target_price (not ltp) to maintain perfect geometric grid levels
+                    self.last_entry_price = target_price
+                    self.buy_count += 1

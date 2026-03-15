@@ -28,6 +28,7 @@ class StrategyConfig(BaseModel):
 
 class BacktestRequest(BaseModel):
     """Request schema for running a backtest."""
+
     symbol: str = Field(..., description="Stock symbol, e.g. RELIANCE")
     strategy: str = Field(default="MACD_VOLUME", description="Strategy name from registry")
     days: int = Field(default=30, ge=1, le=365, description="Number of days of history")
@@ -38,6 +39,7 @@ class BacktestRequest(BaseModel):
 
 class BacktestResult(BaseModel):
     """Response schema for backtest results."""
+
     symbol: str
     strategy: str
     candles_processed: int = 0
