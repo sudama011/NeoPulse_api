@@ -10,6 +10,7 @@ from app.api.v1.router import api_router
 from app.core.executors import global_executor
 from app.core.logger import setup_logging
 from app.data.feed import market_feed
+from app.data.stream import data_stream
 
 # 1. Import master_data
 from app.data.master import master_data
@@ -41,10 +42,13 @@ async def lifespan(app: FastAPI):
     # 4. Initialize Risk System
     await risk_manager.initialize()
 
-    # 5. Start Data Feed (Background Task)
+    # 5. Start Data Stream Router (Routes ticks from main queue to subscribers)
+    stream_task = asyncio.create_task(data_stream.consume())
+
+    # 6. Start Data Feed (Background Task - receives WebSocket data)
     feed_task = asyncio.create_task(market_feed.connect())
 
-    # 6. Initialize Strategy Engine
+    # 7. Initialize Strategy Engine
     await strategy_engine.initialize()
 
     logger.info("✅ System Ready. Waiting for Start Signal via API.")
@@ -63,6 +67,13 @@ async def lifespan(app: FastAPI):
         feed_task.cancel()
         try:
             await feed_task
+        except asyncio.CancelledError:
+            pass
+
+        # 3. Stop Stream Router
+        stream_task.cancel()
+        try:
+            await stream_task
         except asyncio.CancelledError:
             pass
 

@@ -246,13 +246,55 @@ class BaseStrategy(ABC):
 
         if response and response.status in [OrderStatus.COMPLETE, OrderStatus.PARTIAL]:
             filled = response.filled_qty
+            fill_price = response.average_price if response.average_price else price
+
+            # Update position and average price
+            old_position = self.position
+            old_avg_price = self.avg_price
+
             if side == "BUY":
-                self.position += filled
-            else:
-                self.position -= filled
+                new_position = old_position + filled
+
+                # Calculate new average price
+                if old_position >= 0:
+                    # Adding to long or opening long
+                    if new_position != 0:
+                        self.avg_price = ((old_position * old_avg_price) + (filled * fill_price)) / new_position
+                else:
+                    # Reducing short position
+                    if new_position >= 0:
+                        # Closed short and possibly opened long
+                        self.avg_price = fill_price if new_position > 0 else 0.0
+                    else:
+                        # Still short, avg price unchanged
+                        pass
+
+                self.position = new_position
+
+            else:  # SELL
+                new_position = old_position - filled
+
+                # Calculate new average price
+                if old_position <= 0:
+                    # Adding to short or opening short
+                    if new_position != 0:
+                        self.avg_price = ((abs(old_position) * old_avg_price) + (filled * fill_price)) / abs(new_position)
+                else:
+                    # Reducing long position
+                    if new_position <= 0:
+                        # Closed long and possibly opened short
+                        self.avg_price = fill_price if new_position < 0 else 0.0
+                    else:
+                        # Still long, avg price unchanged
+                        pass
+
+                self.position = new_position
 
             self.last_trade_time = datetime.now()
-            logger.info(f"✅ {self.name} Position Updated: {self.position}")
+            logger.info(
+                f"✅ {self.name} Position Updated: {old_position} → {self.position} | "
+                f"Avg Price: {old_avg_price:.2f} → {self.avg_price:.2f}"
+            )
 
         return response
 

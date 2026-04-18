@@ -162,9 +162,10 @@ async def stop_bot(data: StopRequest, session=Depends(get_session)):
             for inst in instances:
                 inst.is_active = False
                 stopped_strategies.append(inst.instance_name)
+                # Stop the running task
+                await strategy_engine.stop_strategy(inst.token)
 
             await session.commit()
-            await strategy_engine.initialize()  # Reload without stopped strategies
 
             return {
                 "status": "success",
@@ -186,7 +187,9 @@ async def stop_bot(data: StopRequest, session=Depends(get_session)):
 
             instance.is_active = False
             await session.commit()
-            await strategy_engine.initialize()  # Reload without stopped strategy
+
+            # Stop the running task
+            await strategy_engine.stop_strategy(instance.token)
 
             return {
                 "status": "success",

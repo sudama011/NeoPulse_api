@@ -29,6 +29,7 @@ class StrategyEngine:
     async def initialize(self):
         """
         Load active strategy instances from database using the registry.
+        If engine is running, spawns tasks for new strategies.
         """
         logger.info(f"🧠 Strategy Engine: Initializing... Available strategies: {list_strategies()}")
 
@@ -38,7 +39,13 @@ class StrategyEngine:
             instances = result.scalars().all()
 
             if instances:
+                new_strategies = []
                 for inst in instances:
+                    # Skip if already loaded
+                    if inst.token in self.active_strategies:
+                        logger.debug(f"⏭️ Skipping already loaded: {inst.instance_name}")
+                        continue
+
                     try:
                         # Use registry to create strategy
                         strategy_cls = get_strategy_class(inst.strategy_type)
@@ -50,12 +57,32 @@ class StrategyEngine:
                             leverage=inst.leverage,
                         )
                         self.add_strategy(strategy)
+                        new_strategies.append(strategy)
                         logger.info(
                             f"✅ Loaded: {inst.instance_name} ({inst.strategy_type} on {inst.symbol}, "
                             f"leverage={inst.leverage}x, sizing={inst.sizing_method})"
                         )
                     except ValueError as e:
                         logger.error(f"❌ Failed to load {inst.instance_name}: {e}")
+
+                # If engine is running, spawn tasks for new strategies immediately
+                if new_strategies:
+                    # Mark engine as running when spawning tasks
+                    self._running = True
+
+                    logger.info(f"🔄 Spawning tasks for {len(new_strategies)} new strategies...")
+
+                    # Subscribe to market feed for new tokens
+                    from app.data.feed import market_feed
+                    new_tokens = [s.token for s in new_strategies]
+                    if new_tokens:
+                        await market_feed.subscribe(new_tokens)
+                        logger.info(f"📡 Subscribed to market feed for {len(new_tokens)} new tokens")
+
+                    for strategy in new_strategies:
+                        task = asyncio.create_task(self._run_strategy_loop(strategy))
+                        self.tasks.append(task)
+                        logger.info(f"🏁 Started task for: {strategy.name}")
             else:
                 logger.warning("⚠️ No active strategy instances found in DB. Engine Idle.")
 
@@ -103,6 +130,13 @@ class StrategyEngine:
         self._running = True
         logger.info(f"🚀 Strategy Engine: Launching {len(self.active_strategies)} Strategies...")
 
+        # Subscribe to market feed for all active tokens
+        from app.data.feed import market_feed
+        tokens = list(self.active_strategies.keys())
+        if tokens:
+            await market_feed.subscribe(tokens)
+            logger.info(f"📡 Subscribed to market feed for {len(tokens)} tokens")
+
         # Spawn tasks
         for strategy in self.active_strategies.values():
             task = asyncio.create_task(self._run_strategy_loop(strategy))
@@ -110,7 +144,7 @@ class StrategyEngine:
 
     async def stop(self):
         """
-        Graceful Shutdown.
+        Graceful Shutdown - stops all strategies.
         """
         logger.info("🛑 Strategy Engine: Stopping...")
         self._running = False
@@ -124,7 +158,25 @@ class StrategyEngine:
             await asyncio.gather(*self.tasks, return_exceptions=True)
 
         self.tasks = []
+        self.active_strategies = {}
         logger.info("✅ Strategy Engine: Stopped.")
+
+    async def stop_strategy(self, token: str):
+        """
+        Stop a specific strategy by token.
+        """
+        if token not in self.active_strategies:
+            logger.warning(f"⚠️ Strategy with token {token} not found")
+            return
+
+        strategy = self.active_strategies[token]
+        strategy.is_active = False
+        logger.info(f"🛑 Stopped strategy: {strategy.name}")
+
+        # Remove from active strategies
+        del self.active_strategies[token]
+
+        # Note: The task will exit on its own when it checks strategy.is_active
 
 
 strategy_engine = StrategyEngine()
