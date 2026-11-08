@@ -4,70 +4,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-NeoPulse is an async algorithmic trading backend for NSE equities: a FastAPI modular monolith that consumes the Kotak Neo WebSocket feed, runs strategies per symbol, applies risk checks, and routes orders to either the live Kotak broker or an in-process virtual broker. A separate `backtest/` package replays historical data (via yfinance) through the same strategy classes.
+Personal, single-process asyncio trading system for NSE equities on Kotak Neo (Trade API, SDK v3 `kotakneoapi`, import name `neo_api_client`). FastAPI exposes control endpoints; the real work is background tasks. The top priority is that a strategy runs unattended and that **any crash or restart recovers orders, positions and state from Postgres + the broker**. Kotak charges zero brokerage on API orders; statutory charges are modelled in `app/portfolio/charges.py`.
 
 ## Commands
 
-The Makefile uses `.venv/bin/*` directly, so a venv at `.venv` is assumed.
-
 ```bash
-make install                     # create .venv, install requirements.txt (dev tools: pip install -r requirements-dev.txt)
-make docker-up                   # Postgres 15 via docker-compose (reads .env)
-make db-init                     # scripts/init_db.py — DROPS and recreates all tables
-make db-migrate msg='desc'       # alembic autogenerate; make db-upgrade / db-downgrade
-make sync                        # scripts/sync_master.py — download Kotak instrument master to disk + DB
-make run                         # uvicorn app.main:app --reload on :8000
-
-make test                        # pytest tests/ -v
-.venv/bin/python -m pytest tests/unit/strategy/test_base.py::TestName::test_name   # single test
-make lint                        # flake8 (E501 ignored) + mypy over app backtest tests scripts
-make format                      # black + isort (line length 120)
-
-# Backtest (run from repo root)
-.venv/bin/python backtest/engine.py --symbol HDFCBANK --strategy MACD_VOLUME --days 59 --interval 5m --capital 100000 [--interactive]
+make install            # .venv + requirements-dev.txt
+make migrate            # alembic upgrade head (schema lives in app/models/__init__.py)
+make migration msg=...  # autogenerate a migration after model changes
+make sync               # download Kotak instrument master
+make run                # uvicorn app.main:app
+make test               # all tests; integration tests need a Postgres (see below)
+make lint / make format # flake8 (.flake8) + mypy / black + isort (line length 120)
+.venv/bin/python -m pytest tests/integration/test_trading_flow.py::test_crash_recovery_applies_fills_once
+.venv/bin/python -m backtest.engine --symbol RELIANCE --strategy MACD_VOLUME --interval 5 --days 59 [--params JSON] [--plot]
 ```
 
-pytest runs with `asyncio_mode = "auto"`, so `async def test_*` needs no decorator. `tests/conftest.py` provides `mock_broker` and `mock_db_session` fixtures; tests don't need a live DB or broker.
-
-Config comes from `.env` (see `.env.example`) via `app/core/settings.py`. `PAPER_TRADING=True` selects the virtual broker.
+Integration tests use a real Postgres at `TEST_DATABASE_URL` (default `postgresql+asyncpg://neopulse_test@localhost:55432/neopulse_test`); the `sf` fixture recreates the schema per test and skips if the DB is unreachable. `tests/fakes.py` has a scriptable `FakeBroker`. Never read `.env`; tests set dummy credentials in `tests/conftest.py`.
 
 ## Architecture
 
-### Module-level singletons
-Every major component is a global instance created at import time and shared across the app: `market_feed`, `data_stream`, `master_data`, `execution_engine`, `risk_manager`, `strategy_engine`, `global_executor`, `kotak_adapter`, `virtual_broker`. Code imports and calls these directly rather than using dependency injection. Tests and the backtester **monkey-patch these singletons**. For example, `BacktestEngine.run()` swaps `execution_engine.broker` and replaces `risk_manager.can_trade` and `calculate_size`, then restores them. Keep that in mind when changing method signatures on these objects.
+`app/container.py` is the composition root: it builds every component with explicit constructor dependencies (no module-level singletons except `settings` and `global_executor`) and owns the startup recovery sequence: load instruments/positions/kill-switch → broker login (retried in background if down) → `OrderManager.recover()` → register active instances → `PositionReconciler.reconcile(startup=True)` (live only) → market feed → `StrategyEngine.start_all()` → supervised periodic loops (`app/core/tasks.py`) and the daily `Scheduler`. API routes get the container from `request.app.state.container`.
 
-`ExecutionEngine.broker` is chosen once at construction (`virtual_broker if settings.PAPER_TRADING else kotak_adapter`). Both implement `BrokerAdapter` in `app/execution/core.py`.
+Layers (dependencies point downward):
+- `app/domain/models.py` — value types (`Side`, `OrderStatus`, `Tick`, `Candle`, `OrderRequest`, `BrokerOrder`, `Fill`, `PositionState`). `PositionState.apply()` is the single source of position/realized-P&L math, shared by live and backtest.
+- `app/broker/` — `Broker` port (`base.py`) with `KotakBroker` and `PaperBroker`. `OrderRejected` = definitely not placed; `BrokerUnavailable` = outcome unknown. `KotakSession` owns the SDK client, daily login and auth-retry; all blocking SDK calls go through `session.call()` (thread pool + rate limiter). SDK v3 REST methods return `{"Error": ...}` dicts rather than raising; `response_error()` detects them, and an `Error` holding an SDK validation exception means "not sent".
+- `app/market/` — `MarketFeed` (SFeed websocket → `Tick` → `TickBus`, zombie watchdog), `TickBus` (per-subscriber bounded queues + last-price cache used for MTM and paper fills), `CandleBuilder` (session-aligned buckets, cumulative-volume deltas, `flush()` for quiet instruments, `seed()` after warm-up), `HistoryService` (Kotak historical candles), `InstrumentStore`.
+- `app/oms/order_manager.py` — order lifecycle. Write-ahead insert, client id sent as broker `tag` (echoed as `GuiOrdId`), fills computed from cumulative `filled_qty` deltas (idempotent across order feed + polling), UNKNOWN orders resolved via tag and never resent, PENDING orders are in-flight and never failed, live orders missing from the book are never assumed dead. Listener callbacks are delivered by a single dispatcher task (ordered, non-reentrant); use `await oms.drain()` in tests.
+- `app/portfolio/book.py` — `PositionBook`: per-instance positions + today's realized P&L/charges. `record_fill()` writes fill + order fill state + instance position in ONE transaction.
+- `app/risk/` — `RiskManager.check_entry()` gates entries only (kill switch, daily net loss, entry window, max open positions, margin); exits are never blocked. Kill switch is persisted in `kv_store` per day and its flatten callback runs in a separate task.
+- `app/strategy/` — `base.py` defines `Strategy` and the `StrategyContext` protocol; `runner.py` (`StrategyRunner`) is the live context; `backtest/engine.py` (`BacktestContext`) is the backtest one. Strategies live in `app/strategy/library/` and register with `@register_strategy("NAME")`; the registry imports that package lazily and import errors are fatal. `StrategyEngine` (`engine.py`) creates/stops/resumes/disables instances, supervises restarts every 30s, and does flatten-all / square-off (including orphaned positions of stopped instances).
+- `app/scheduler.py` — daily jobs that run once per trading day inside a time window (session refresh, instrument sync, square-off, EOD report); a failing job retries until its window closes.
 
-### Startup order (`app/main.py` lifespan)
-global thread pool → master data cache → execution engine login → risk manager (loads the active `TradingSession` from the DB) → `data_stream.consume()` task → `market_feed.connect()` task → strategy engine loads active `StrategyInstance` rows. Trading itself starts only when `POST /api/v1/engine/start` is called. That endpoint creates or reuses a `TradingSession`, inserts `StrategyInstance` rows, then re-runs `risk_manager.initialize()` and `strategy_engine.initialize()`/`start()`. `POST /engine/stop` deactivates them.
+Runner invariants worth preserving: every event for an instance (tick, candle timer, fill, order update, flatten) is serialized by `StrategyRunner._lock`; only one working order per instance (`has_pending_order`); stop/target live in persisted `state["stop"]/["target"]` and are enforced on every tick; repeated broker rejections trigger an exponential cooldown; 5 consecutive strategy exceptions disable the instance (flattened, status `DISABLED`). At most one `ACTIVE` instance per instrument (partial unique index), which keeps broker reconciliation unambiguous.
 
-### Kotak SDK (v3, `kotakneoapi`)
-The broker SDK is `kotakneoapi` 3.x. Its import name is still `neo_api_client`. Don't install it alongside the legacy `neo-api-client` package, because both write into the same folder. `app/execution/kotak.py` is the only place that should know the SDK's response shapes:
-- v3 REST methods return `{"Error"|"error"|"Error Message": ...}` dicts instead of raising. `_sdk_error()` detects these, and `place_order` turns them into `{"stat": "Not_Ok", "errMsg": ...}`, which `ExecutionEngine` parses.
-- `positions()` returns raw rows (`flBuyQty`, `buyAmt`, `tok`, …). `get_positions()` adds `netQty` / `avgPrice` / `realizedPNL` / `instrumentToken` / `instrumentName` for the sentinel and `BaseStrategy.sync_position`. `get_limits()` adds a lowercase `net` key.
-- v3 validates orders on the client side. It accepts only canonical codes: segment `nse_cm`…, order_type `L/MKT/SL/SL-M`, validity `DAY/IOC`, and `price > 0` for `L`/`SL`.
-- The SDK writes its own log file to `logs/neo-api-client.log` (`NEO_LOG_*` env vars).
+Persistence: `strategy_instance` (config, params, position, JSON state, status), `orders`, `fills`, `kv_store`, `instrument`. Change models in `app/models/__init__.py`, then `make migration msg=...`.
 
-### Tick flow
-1. `MarketFeed.connect()` (`app/data/feed.py`) opens the v3 async SFeed socket via `kotak_adapter.client.create_websocket()`. It needs a logged-in trade session, so the feed waits for `kotak_adapter.is_logged_in`. `_read_loop` iterates typed `SFeedScrip` messages and turns them into the legacy tick dict (`tk`, `ltp`, `v` = cumulative day volume, `ltq`, `ltt`, `op`/`h`/`lo`/`c`) with `normalize_message()`. Everything downstream depends on those keys.
-2. `DataStream` is an in-process pub/sub. One bounded main queue (10k) feeds per-subscriber queues (1k) keyed by instrument token (`tick["tk"]`). When a queue is full, ticks are dropped and counted in `metrics`; publishers never block.
-3. `StrategyEngine._run_strategy_loop` runs one asyncio task per strategy. Each task subscribes to its token and calls `strategy.safe_on_tick(tick)`.
-4. SDK REST calls (place order, positions, limits) are blocking and must go through `await run_blocking(fn, ...)` (`app/core/executors.py`), which uses the global `ThreadPoolExecutor`. The WebSocket is native async and runs on the main loop.
-5. The SDK reconnects dropped connections on its own. On top of that, `MarketFeed.connect()` runs a watchdog. If subscribed tokens get no packets for 10 seconds, or the SDK gives up reconnecting, it tears down the socket and rebuilds it with exponential backoff (up to 60 seconds). `market_feed.subscribe()` queues tokens while disconnected and sends them on connect.
+## Conventions
 
-### Strategies
-- **Registry pattern:** `app/strategy/__init__.py` auto-imports every module in `app/strategy/` at package import time. Classes decorated with `@register_strategy("NAME")` become available by name (case-insensitive) to the API (`strategy_type`), the DB (`StrategyInstance.strategy_type`), and the backtester (`--strategy`). One class can have several aliases. For example, `MACD_VOLUME` and `MOMENTUM` both map to `MACDVolumeStrategy`. To add a strategy, drop a new module into `app/strategy/`. An import error there is logged, not raised, so a broken strategy silently disappears from the registry.
-- **`BaseStrategy` (`base.py`):** subclasses implement `on_tick`, or override `on_candle` for candle-close logic. The backtester calls `safe_on_candle`. The default `on_candle` appends to `self.candles` and converts the candle into a tick-like dict. Always trade through `self.buy()` / `self.sell()`. These infer entry vs exit from the current `self.position`, ask `risk_manager.calculate_size` for entry quantity when `qty` is omitted, debounce for 1 second, and update position/avg price from the fill. `safe_on_*` disables a strategy after 5 consecutive exceptions. `initialize()` reconciles position from the broker.
-- `StrategyEngine.initialize()` builds strategies with `strategy_cls(name=, symbol=, token=, params={}, leverage=)`, so strategy constructors must accept `leverage`. Strategies are keyed by **token**, which means only one active strategy per instrument.
-- `GenericStrategy` (`GENERIC` / `RULE_ENGINE`) is a JSON rule engine over `Toolbox` indicators (`toolbox.py`).
-
-### Execution and risk
-- `ExecutionEngine.execute_order` runs in this order: `risk_manager.can_trade` → look up `freeze_qty`/segment in master data → if quantity exceeds `freeze_qty`, split into iceberg legs → send via `broker` → persist to `OrderLedger`.
-- `RiskManager` combines `RiskSentinel` (daily-loss kill switch, concurrent-trade slots, broker state sync) and `PositionSizer`. `can_trade` returns False until `initialize()` has run. Per-strategy entry checks in `BaseStrategy.buy/sell` are currently stubbed to `allowed = True`, so the engine-level `can_trade` is the real gate.
-
-### Data / DB
-- Async SQLAlchemy plus asyncpg (`app/db/session.py` provides `AsyncSessionLocal` and `engine`). Models live in `app/models/`, and `app/models/__init__.py` imports them all for Alembic/`create_all`. `alembic/versions/` is currently empty; the schema is created by `make db-init`, which drops existing tables first.
-- `master_data` holds an in-RAM symbol↔token cache backed by `InstrumentMaster` and `instruments_master.csv` (generated by `make sync`). API request validation (`StrategyConfig.symbol`) rejects symbols missing from this cache.
-
-### Docs
-`docs/system_design.md` (architecture diagram, concurrency model), `docs/strategies.md` (MACD/momentum strategy logic), `docs/srs.md` (requirements). The README's sample `/engine/start` payload is outdated. The current schema is `StartRequest` in `app/schemas/requests.py`: session-level `capital` / `max_daily_loss` / `max_concurrent_trades` plus a `strategies: [{symbol, strategy_type, leverage, sizing_method, risk_per_trade_pct}]` list.
+- Prices to the broker: canonical codes only (`nse_cm`, `L/MKT/SL/SL-M`, `DAY`), limit prices rounded to tick size via `InstrumentInfo.round_price`.
+- Times are IST-aware (`app/core/clock.py`); market 09:15–15:30, candles aligned to 09:15.
+- Optional settings with defaults (risk limits, cutoffs, OMS timings) are in `app/core/settings.py` and documented in `.env.example`.

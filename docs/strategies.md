@@ -1,33 +1,45 @@
-# Algorithmic Strategies
+# Strategies
 
-This document details the quantitative logic currently deployed in `app/strategy/strategies.py`.
+All strategies live in `app/strategy/library/` and are registered by name. List them with
+`GET /api/v1/strategies/types`. They are examples to build on, not recommendations.
 
-## 1. MACD Volume Trend (The "MOMENTUM" Strategy)
+## MACD_VOLUME (long only)
 
-**Objective:** Capture significant intraday trends by combining Momentum (MACD) with Trend Filters (EMA) and Volatility Sizing (ATR).
+- Entry on a closed candle when the MACD histogram crosses above zero and close > EMA(`ema_period`).
+- Stop = close − `atr_stop_mult` × ATR, target = close + `reward_risk` × stop distance.
+- Full size when volume > `vol_multiplier` × average volume, half size otherwise.
+- Exit when the histogram crosses below zero, or when the stop or target is hit (checked every tick).
 
-### A. Configuration
-* **Timeframe:** 1-Minute Candles (Constructed from live ticks).
-* **Repainting Protection:** Signals are ONLY generated on **Candle Close** (when the minute changes).
+Params: `ema_period` (200), `macd_fast` (12), `macd_slow` (26), `macd_signal` (9),
+`vol_period` (20), `vol_multiplier` (1.2), `atr_period` (14), `atr_stop_mult` (2.0), `reward_risk` (2.0).
 
-### B. Indicators
-1.  **Trend Filter:** `EMA(200)` (Exponential Moving Average).
-2.  **Momentum:** `MACD(12, 26, 9)`.
-3.  **Volatility:** `ATR(14)` (Average True Range) for dynamic Stop Loss.
+## GRID_ACCUMULATOR (long only, tick driven)
 
-### C. Entry Logic (Long)
-A trade is initiated if **ALL** conditions are met:
-1.  **Trend Alignment:** Close Price > EMA(200).
-2.  **Momentum Trigger:** MACD Histogram Cross-Over (Yesterday < 0 AND Today > 0).
-3.  **Risk Check:** Account is not in "Kill Switch" mode.
+Buys `initial_qty`, then adds `initial_qty + level × qty_step` each time price falls
+`grid_step` below the previous level (up to `max_levels`, capped by `max_qty`), and exits
+everything once price is `profit_per_share` above the average cost. Grid progress is in
+persisted state, so a restart resumes the same grid. It has no stop-loss, so rely on the
+account kill switch and square-off.
 
-### D. Exit Logic
-1.  **Technical Exit:** MACD Histogram Cross-Under (Momentum loss).
-2.  **Stop Loss:** `Entry Price - (2 * ATR)`.
-    * *Note:* The SL is monitored on *every tick* (Fast Exit), not just candle close.
+## RULE_ENGINE (long only)
 
-### E. Position Sizing
-Quantity is calculated dynamically based on risk:
-$$
-Qty = \frac{\text{Total Capital} \times \text{Risk \% per Trade}}{\text{Entry Price} - \text{Stop Loss Price}}
-$$
+JSON rules evaluated on each closed candle; all rules in a list must pass.
+
+```json
+{
+  "warmup": 60,
+  "stop_atr_mult": 2,
+  "buy_rules":  [{"lhs": {"ind": "ema", "period": 20}, "op": ">", "rhs": {"ind": "ema", "period": 50}},
+                 {"lhs": {"ind": "rsi", "period": 14}, "op": "<", "rhs": 60}],
+  "sell_rules": [{"lhs": {"ind": "ema", "period": 20}, "op": "<", "rhs": {"ind": "ema", "period": 50}}]
+}
+```
+
+Indicators: `ema`, `sma`, `rsi`, `atr`, `adx`, `vwap`, `supertrend`, `bb_upper`, `bb_lower`,
+`close`, `open`, `high`, `low`. Operators: `>`, `<`, `>=`, `<=`, `==`.
+
+## Sizing
+
+Unless a strategy passes `qty`, quantity = min(capital × risk% × confidence ÷ |entry − stop|,
+capital × leverage ÷ entry), rounded down to the lot size. Entries also pass the account risk
+checks (kill switch, daily loss, entry window, max open positions, margin).

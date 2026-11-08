@@ -1,137 +1,73 @@
-# System Architecture & Design
+# System Design
 
-## 1. High-Level Architecture
-
-NeoPulse follows a **Reactive Modular Monolith** pattern. The system is event-driven but runs within a single process to minimize network latency (serialization/deserialization costs).
-
-The architecture is strictly divided into **AsyncIO** (Non-Blocking) and **Threaded** (Blocking) domains to ensure that a slow broker API response never freezes the market data feed.
-
-### Architecture Diagram
+Single asyncio process (FastAPI + background tasks). Blocking Kotak SDK REST calls run on a
+thread pool; the market and order WebSockets are native async.
 
 ```mermaid
 graph TD
-    subgraph External_World [External World]
-        K[Kotak Neo API]
-        T[Telegram]
+    subgraph Kotak Neo
+        SF[SFeed WebSocket]
+        OF[Order feed WebSocket]
+        REST[REST: orders, order book, positions, limits, history]
     end
 
-    subgraph Core [NeoPulse Core FastAPI Process]
-        direction TB
-        
-        subgraph Data_Layer [Data Layer AsyncIO]
-            MF[MarketFeed<br/>WebSocket + Watchdog]
-            DS[DataStream<br/>Pub/Sub Event Bus]
-            MD[MasterData<br/>RAM Cache]
-        end
-        
-        subgraph Strategy_Layer [Strategy Layer AsyncIO]
-            SE[Strategy Engine]
-            S1[Momentum Strategy]
-            S2[MACD Strategy]
-        end
-        
-        subgraph Risk_Layer [Risk Layer AsyncIO]
-            RS[Risk Sentinel<br/>Net PnL + Tax Calc<br/> can_trade, calculate_size]
-        end
-        
-        subgraph Execution_Layer [Execution Layer]
-            EE[Execution Engine<br/>Lifecycle Manager]
-            
-            subgraph Adapters
-                VB[Virtual Broker]
-                KA[Kotak Adapter]
-            end
-            
-            GE[Global Executor<br/>Thread Pool]
-        end
-        
-        subgraph Notification
-            NM[Notification Manager]
-        end
-    end
-
-    subgraph Persistence
-        DB[(PostgreSQL<br/>Order Ledger)]
-    end
-
-    %% Data Flow
-    K == WebSocket ==> MF
-    MF -- Raw Ticks --> DS
-    DS -- Tick Event --> S1
-    DS -- Tick Event --> S2
-    MD -.-> S1
-    
-    %% Signal Flow
-    S1 -- Buy/Sell Signal --> RS
-    RS -- Validated Signal --> EE
-    
-    %% Execution Flow
-    EE -- 1. Persist PENDING --> DB
-    EE -- 2. Route Order --> KA
-    
-    %% Thread Bridging
-    KA -- Blocking Call --> GE
-    GE -- HTTP Request --> K
-    
-    %% Feedback Loop
-    K -.-> KA
-    KA -- 3. Persist COMPLETE --> DB
-    KA -- Notify --> NM
-    NM -.-> T
+    SF --> Feed[MarketFeed + watchdog] --> Bus[TickBus<br/>last-price cache]
+    Bus --> R1[StrategyRunner A]
+    Bus --> R2[StrategyRunner B]
+    R1 -- entries --> Risk[RiskManager]
+    R1 & R2 -- submit --> OMS[OrderManager]
+    OMS -- place/cancel --> Broker{{Broker port}}
+    Broker --> Kotak[KotakBroker] --> REST
+    Broker --> Paper[PaperBroker] -. prices .-> Bus
+    OF --> Kotak -. updates .-> OMS
+    OMS -- poll order book --> Broker
+    OMS -- fills --> Book[PositionBook]
+    Book --> DB[(Postgres)]
+    OMS --> DB
+    Rec[PositionReconciler] -- positions --> Broker
+    Rec --> Book
+    Risk -- day P&L --> Book
+    Sched[Scheduler] --> Engine[StrategyEngine]
+    Engine --> R1 & R2
 ```
 
-## 2. Component Deep Dive
+## Order lifecycle
 
-### A. The Data Layer (Nervous System)
+```
+PENDING ──ack──> OPEN ──fills──> FILLED
+   │               └──> CANCELLED (may be partially filled)
+   ├──reject──> REJECTED
+   └──transport error──> UNKNOWN ──found by tag──> OPEN/FILLED/...
+                                 └──absent 30s──> FAILED
+```
 
-* **MarketFeed:** A self-healing WebSocket client. It includes a **"Zombie Watchdog"** that strictly monitors the time since the last packet. If silence > 10s, it forcibly kills the connection and triggers a reconnect with exponential backoff.
-* **DataStream:** An in-memory `asyncio.Queue` based Event Bus. Strategies subscribe to specific tokens (`2885`) to receive ticks.
-* **MasterDataManager:** Loads the entire Instrument Master (10k+ rows) into a Python Dictionary at startup for complexity symbol lookups (`RELIANCE-EQ` -> `2885`).
+1. Write-ahead: row inserted (`PENDING`) before the broker call; our id is the broker `tag`.
+2. Updates arrive from the order feed and from polling the order book. Both carry cumulative
+   filled quantity, so applying either (or both) is idempotent.
+3. A fill writes the fill row, the order's fill state and the instance position in one
+   transaction.
+4. Unfilled limit orders are cancelled after `LIMIT_ORDER_TTL_SECONDS`.
 
-### B. The Execution Layer (Arms)
+## Recovery
 
-* **ExecutionEngine:** The central coordinator. It ensures **Atomicity**:
-1. Create `OrderLedger` entry (Status: `PENDING_BROKER`).
-2. Send Order to Adapter.
-3. Update `OrderLedger` (Status: `COMPLETE` or `REJECTED`).
+| Failure | Behaviour |
+|---|---|
+| Process crash / restart | Orders, positions, P&L, strategy state, stops and kill switch reload from DB; open orders matched to the broker book by tag; positions reconciled; indicators warmed from history; ACTIVE instances resume. |
+| Crash between saving and sending an order | Row is PENDING → treated as UNKNOWN; matched by tag or failed after 30s. Never resent automatically. |
+| Broker down at startup | API still starts; login retried with backoff; recovery runs once connected. |
+| Session expiry / new day | Auth-looking errors trigger re-login + one retry; daily refresh job at 08:30. |
+| Market feed silent | Watchdog rebuilds the socket after 30s of silence during market hours. |
+| Order feed down | Polling continues (2s while orders are open). |
+| Strategy exception | Logged; 5 in a row → instance disabled and flattened, alert sent. |
+| Repeated rejections | Exponential cooldown per instance (2s … 5 min), alert at 3. |
+| Position mismatch (auto square-off, manual trade) | Broker figure adopted after two consecutive checks (immediately at startup); untracked positions reported. |
+| Daily loss breached | Kill switch: flatten all, block entries, persisted for the day. |
 
+## Concurrency rules
 
-* *Why?* If the app crashes between step 2 and 3, the DB still has a record of the attempt, preventing "Ghost Orders".
-
-
-* **GlobalExecutor:** A `ThreadPoolExecutor` (default 20 workers). It wraps all blocking Kotak SDK calls (`place_order`, `login`) so they run in a separate thread, preventing the main AsyncIO loop from lagging.
-
-### C. The Risk Layer (Shield)
-
-* **RiskSentinel:** A proactive guardrail.
-* **Net PnL Calculation:**
-
-$$\text{Net PnL} = \text{Gross PnL} - (\text{Turnover} \times 0.00035)$$
-
-* *Note:* The 0.035% tax estimation covers STT, Exchange Txn Charges, Stamp Duty, SEBI Fee and GST.
-
-
-* **Kill Switch:** If `Net PnL < Max Daily Loss`, the Sentinel locks the engine, rejecting all new `BUY` orders immediately.
-
-## 3. Database Schema
-
-**Table: `order_ledger**`
-| Column | Type | Description |
-| :--- | :--- | :--- |
-| `internal_id` | UUID | Primary Key (System generated) |
-| `exchange_id` | String | Kotak Order ID (e.g., `124012800005`) |
-| `token` | Integer | Instrument Token |
-| `transaction_type`| String | BUY / SELL |
-| `status` | String | PENDING, COMPLETE, REJECTED, CANCELLED |
-| `raw_response` | JSONB | Full API response dump for auditing |
-
-**Table: `instrument_master**`
-
-* Synced daily via `scripts/sync_master.py`.
-* Contains `lot_size`, `tick_size`, and `freeze_qty` critical for validation.
-
-## 4. Deployment Strategy
-
-* **Container:** Docker (Python 3.11 Slim).
-* **Orchestration:** Docker Compose.
-* **Restart Policy:** `unless-stopped` (Ensures the bot revives after a crash).
+- Each `StrategyRunner` serialises its own events with a lock, so a strategy never runs
+  concurrently with itself.
+- OMS listener callbacks go through one dispatcher task, so a fill reported during `submit`
+  (paper mode) cannot deadlock the runner.
+- Risk's kill-switch flatten and the runner's auto-disable run in separate tasks, so a
+  strategy task never waits on itself.
