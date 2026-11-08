@@ -67,6 +67,31 @@ Instances persist: after a restart every `ACTIVE` instance resumes automatically
 | `POST /api/v1/risk/kill-switch` | `{"active": true}` trips it (flattens all); `false` resets |
 | `POST /api/v1/risk/flatten-all` | close everything now |
 
+## Telegram control
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (your own chat with the bot). The server long-polls
+Telegram, so it needs no public port. Only that chat is obeyed. Commands that trade or change risk
+ask you to tap **Confirm** (valid for 60s), and commands sent while the server was down are discarded.
+
+| Command | |
+|---|---|
+| `/status` | broker session, feed, kill switch, day P&L, counts |
+| `/positions`, `/orders`, `/strategies` | live views |
+| `/buy RELIANCE 10` | market buy (intraday) |
+| `/buy RELIANCE 10 @2450 sl=2420 tgt=2520` | limit buy with stop-loss and target |
+| `/sell SBIN 50 sl=842` | short (intraday) or reduce a long |
+| `/buy INFY 5 cnc` | delivery |
+| `/sl RELIANCE sl=2430` | move stop / target on an open position (`sl=0` clears) |
+| `/exit RELIANCE`, `/exit all` | close at market |
+| `/cancel NP…`, `/cancel all` | cancel working orders |
+| `/ltp TCS` | last price |
+| `/stop ID\|SYMBOL [keep]`, `/resume ID` | stop (flattens unless `keep`) / resume a strategy |
+| `/kill`, `/unkill` | kill switch on (flatten all, block entries) / off |
+
+Manual orders run through a `MANUAL` strategy instance per symbol, so they get the same
+persistence, stop/target enforcement, 15:15 square-off, risk checks and crash recovery as
+automated trades. Fills, rejections and feed or session outages are pushed to the same chat.
+
 ## Backtesting
 
 ```bash
@@ -74,6 +99,15 @@ make backtest symbol=RELIANCE strategy=MACD_VOLUME interval=5 days=59
 .venv/bin/python -m backtest.engine --symbol INFY --strategy RULE_ENGINE --interval 15 \
     --params '{"buy_rules": [...], "sell_rules": [...]}' --plot
 ```
+
+Portfolio backtests (many symbols, shared `MAX_OPEN_POSITIONS`, in- and out-of-sample split):
+
+```bash
+.venv/bin/python -m backtest.portfolio --strategy ORB --interval 15 --days 59 --product MIS --split 2026-10-09
+.venv/bin/python -m backtest.portfolio --strategy ORB --interval 15 --days 365 --product MIS --source kotak
+```
+
+Strategy research results and caveats are in [docs/strategies.md](docs/strategies.md).
 
 Orders fill at the next candle's open (no look-ahead), stops gapping through fill at the open,
 charges are applied and intraday positions are squared off each session.

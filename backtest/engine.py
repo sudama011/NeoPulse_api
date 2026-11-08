@@ -21,7 +21,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from datetime import time as dtime
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
@@ -59,6 +60,7 @@ class BacktestConfig:
     slippage_bps: float = 2.0
     limit_ttl_candles: int = 3
     lot_size: int = 1
+    square_off: dtime = dtime(15, 15)  # MIS positions are closed at the open of the first bar at/after this
 
 
 class BacktestContext:
@@ -78,6 +80,8 @@ class BacktestContext:
         self._index = 0
         self._charges = ChargesCalculator()
         self.fills: list[Fill] = []
+        self.entry_gate: Optional[Callable[[], bool]] = None  # portfolio-level limit (e.g. max positions)
+        self._pending_is_entry = False
 
     # ------------------------------------------------------------------ StrategyContext
     @property
@@ -118,7 +122,12 @@ class BacktestContext:
     ) -> bool:
         if self._pending is not None or qty <= 0:
             return False
+        pos = self._position.qty
+        is_entry = not is_exit and not (pos != 0 and (pos > 0) != (side is Side.BUY) and qty <= abs(pos))
+        if is_entry and self.entry_gate is not None and not self.entry_gate():
+            return False
         self._pending = _Pending(side, qty, order_type, price, reason, self._index)
+        self._pending_is_entry = is_entry
         return True
 
     # ------------------------------------------------------------------ simulation
@@ -162,44 +171,81 @@ class BacktestContext:
         return self._fill(side, abs(self._position.qty), price, candle.start)
 
 
+class SymbolSimulator:
+    """Steps one strategy over one symbol's candles. Used directly and by the portfolio runner."""
+
+    def __init__(self, cfg: BacktestConfig, entry_gate: Optional[Callable[["SymbolSimulator"], bool]] = None):
+        self.cfg = cfg
+        self.ctx = BacktestContext(cfg)
+        self.ctx.entry_gate = (lambda: entry_gate(self)) if entry_gate else None
+        self.strategy: Strategy = get_strategy_class(cfg.strategy)(self.ctx, cfg.params)
+        self.realized_net = 0.0
+        self.last_close: Optional[float] = None
+        self._index = 0
+
+    @property
+    def position(self) -> int:
+        return self.ctx.position.qty
+
+    @property
+    def wants_entry(self) -> bool:
+        return self.ctx._pending is not None and self.ctx._pending_is_entry
+
+    def pnl(self) -> float:
+        """Realized (net of charges) + unrealized P&L at the last close."""
+        mark = self.last_close or 0.0
+        return self.realized_net + self.ctx.position.unrealized(mark)
+
+    async def step(self, candle: Candle, session_ends: bool) -> None:
+        ctx = self.ctx
+        ctx._index, ctx._now = self._index, candle.start
+        self._index += 1
+        if self.cfg.product is ProductType.MIS and candle.start.timetz().replace(tzinfo=None) >= self.cfg.square_off:
+            # Live parity: the scheduler squares off intraday positions at SQUARE_OFF_TIME, no new trades after.
+            ctx._pending = None
+            if ctx.position.qty != 0:
+                side = Side.SELL if ctx.position.qty > 0 else Side.BUY
+                await self._on_fill(ctx._fill(side, abs(ctx.position.qty), candle.open, candle.start))
+            self.last_close = candle.close
+            return
+        for f in (ctx._execute_pending(candle), ctx._check_protection(candle)):
+            if f:
+                await self._on_fill(f)
+
+        await self.strategy.process_candle(candle)
+        await self.strategy.on_tick(Tick(token="0", ltp=candle.close, ts=candle.start, volume=candle.volume))
+        self.last_close = candle.close
+
+        if session_ends and self.cfg.product is ProductType.MIS:
+            ctx._pending = None  # intraday orders never carry over to the next session
+            await self._close_at(candle)
+
+    async def finish(self, candle: Candle) -> None:
+        """Marks the run end: any open position is closed at the last close."""
+        await self._close_at(candle)
+
+    async def _close_at(self, candle: Candle) -> None:
+        if self.ctx.position.qty != 0:
+            side = Side.SELL if self.ctx.position.qty > 0 else Side.BUY
+            await self._on_fill(self.ctx._fill(side, abs(self.ctx.position.qty), candle.close, candle.start))
+
+    async def _on_fill(self, f: Fill) -> None:
+        self.realized_net += f.realized_pnl - f.charges
+        await self.strategy.on_fill(f)
+
+
 async def run_backtest(cfg: BacktestConfig, candles: list[Candle]) -> BacktestReport:
     if not candles:
         raise ValueError("no candles to backtest")
-    strategy_cls = get_strategy_class(cfg.strategy)
-    ctx = BacktestContext(cfg)
-    strategy: Strategy = strategy_cls(ctx, cfg.params)
-
+    sim = SymbolSimulator(cfg)
     equity: list[tuple[datetime, float]] = []
-    realized_net = 0.0
     for i, candle in enumerate(candles):
-        ctx._index, ctx._now = i, candle.start
-        new_fills = [f for f in (ctx._execute_pending(candle), ctx._check_protection(candle)) if f]
-        for f in new_fills:
-            realized_net += f.realized_pnl - f.charges
-            await strategy.on_fill(f)
-
-        await strategy.process_candle(candle)
-        await strategy.on_tick(Tick(token="0", ltp=candle.close, ts=candle.start, volume=candle.volume))
-
         session_ends = i == len(candles) - 1 or candles[i + 1].start.date() != candle.start.date()
-        if session_ends and cfg.product is ProductType.MIS:
-            ctx._pending = None  # intraday orders never carry over to the next session
-            if ctx.position.qty != 0:
-                side = Side.SELL if ctx.position.qty > 0 else Side.BUY
-                f = ctx._fill(side, abs(ctx.position.qty), candle.close, candle.start)
-                realized_net += f.realized_pnl - f.charges
-                await strategy.on_fill(f)
-
-        equity.append((candle.start, cfg.capital + realized_net + ctx.position.unrealized(candle.close)))
-
-    if ctx.position.qty != 0:  # CNC position still open: mark to market at last close
-        last = candles[-1]
-        side = Side.SELL if ctx.position.qty > 0 else Side.BUY
-        f = ctx._fill(side, abs(ctx.position.qty), last.close, last.start)
-        realized_net += f.realized_pnl - f.charges
-        equity[-1] = (last.start, cfg.capital + realized_net)
-
-    return analyse(cfg.capital, ctx.fills, pd.Series(dict(equity)))
+        await sim.step(candle, session_ends)
+        equity.append((candle.start, cfg.capital + sim.pnl()))
+    await sim.finish(candles[-1])
+    equity[-1] = (candles[-1].start, cfg.capital + sim.pnl())
+    return analyse(cfg.capital, sim.ctx.fills, pd.Series(dict(equity)))
 
 
 def main() -> None:

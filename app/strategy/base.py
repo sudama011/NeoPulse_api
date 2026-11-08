@@ -62,6 +62,7 @@ class StrategyContext(Protocol):
 
 class Strategy(ABC):
     warmup: int = 50  # closed candles required before on_candle is called (may be set in setup)
+    history_bars: int = 0  # extra history to replay on (re)start, for state such as volume baselines
     history_size: ClassVar[int] = 500
 
     def __init__(self, ctx: StrategyContext, params: dict[str, Any]):

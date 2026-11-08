@@ -1,7 +1,7 @@
 """Historical candles from Kotak Neo, used to warm up strategy indicators on (re)start."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from app.broker.kotak_session import KotakSession, response_error
 from app.core.clock import IST, now_ist
@@ -28,6 +28,45 @@ def supported_timeframe(minutes: int) -> bool:
 class HistoryService:
     def __init__(self, session: KotakSession):
         self._session = session
+
+    async def range(
+        self, token: str, timeframe_min: int, start: date, end: date, segment: str = "nse_cm"
+    ) -> list[Candle]:
+        """Closed candles between two dates, fetched in windows the backend allows. Raises on errors."""
+        interval, max_days = _INTERVALS[timeframe_min]
+        out: dict[datetime, Candle] = {}
+        cursor = start
+        while cursor <= end:
+            window_end = min(end, cursor + timedelta(days=max_days - 1))
+            resp = await self._session.call(
+                self._session.client.historical_data,
+                neosymbol=f"{segment}|{token}",
+                interval=interval,
+                from_date=cursor.isoformat(),
+                to_date=window_end.isoformat(),
+            )
+            error = response_error(resp)
+            if error or str(resp.get("status", "")).lower() not in ("success", "ok"):
+                raise RuntimeError(f"historical_data {cursor}..{window_end}: {error or resp}")
+            for c in self._parse(resp, timeframe_min):
+                out[c.start] = c
+            cursor = window_end + timedelta(days=1)
+        return [out[k] for k in sorted(out)]
+
+    @staticmethod
+    def _parse(resp: dict, timeframe_min: int) -> list[Candle]:
+        now = now_ist()
+        bucket = timedelta(minutes=timeframe_min)
+        out: list[Candle] = []
+        for row in (resp.get("data") or {}).get("candles") or []:
+            try:
+                start = datetime.fromisoformat(str(row[0])).astimezone(IST)
+                if start + bucket > now:  # still forming
+                    continue
+                out.append(Candle(start, float(row[1]), float(row[2]), float(row[3]), float(row[4]), int(row[5] or 0)))
+            except (ValueError, TypeError, IndexError):
+                continue
+        return out
 
     async def candles(self, token: str, timeframe_min: int, count: int, segment: str = "nse_cm") -> list[Candle]:
         """Returns up to `count` fully closed candles, oldest first. Empty list on failure."""
@@ -56,15 +95,6 @@ class HistoryService:
             logger.error("History fetch failed for %s: %s", token, error or resp)
             return []
 
-        out: list[Candle] = []
-        bucket = timedelta(minutes=timeframe_min)
-        for row in (resp.get("data") or {}).get("candles") or []:
-            try:
-                start = datetime.fromisoformat(str(row[0])).astimezone(IST)
-                if start + bucket > now:  # still forming
-                    continue
-                out.append(Candle(start, float(row[1]), float(row[2]), float(row[3]), float(row[4]), int(row[5] or 0)))
-            except (ValueError, TypeError, IndexError):
-                continue
+        out = self._parse(resp, timeframe_min)
         out.sort(key=lambda c: c.start)
         return out[-count:]

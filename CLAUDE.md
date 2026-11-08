@@ -18,6 +18,7 @@ make test               # all tests; integration tests need a Postgres (see belo
 make lint / make format # flake8 (.flake8) + mypy / black + isort (line length 120)
 .venv/bin/python -m pytest tests/integration/test_trading_flow.py::test_crash_recovery_applies_fills_once
 .venv/bin/python -m backtest.engine --symbol RELIANCE --strategy MACD_VOLUME --interval 5 --days 59 [--params JSON] [--plot]
+.venv/bin/python -m backtest.portfolio --strategy ORB --interval 15 --days 59 --product MIS --split YYYY-MM-DD [--source kotak]
 ```
 
 Integration tests use a real Postgres at `TEST_DATABASE_URL` (default `postgresql+asyncpg://neopulse_test@localhost:55432/neopulse_test`); the `sf` fixture recreates the schema per test and skips if the DB is unreachable. `tests/fakes.py` has a scriptable `FakeBroker`. Never read `.env`; tests set dummy credentials in `tests/conftest.py`.
@@ -34,9 +35,12 @@ Layers (dependencies point downward):
 - `app/portfolio/book.py` — `PositionBook`: per-instance positions + today's realized P&L/charges. `record_fill()` writes fill + order fill state + instance position in ONE transaction.
 - `app/risk/` — `RiskManager.check_entry()` gates entries only (kill switch, daily net loss, entry window, max open positions, margin); exits are never blocked. Kill switch is persisted in `kv_store` per day and its flatten callback runs in a separate task.
 - `app/strategy/` — `base.py` defines `Strategy` and the `StrategyContext` protocol; `runner.py` (`StrategyRunner`) is the live context; `backtest/engine.py` (`BacktestContext`) is the backtest one. Strategies live in `app/strategy/library/` and register with `@register_strategy("NAME")`; the registry imports that package lazily and import errors are fatal. `StrategyEngine` (`engine.py`) creates/stops/resumes/disables instances, supervises restarts every 30s, and does flatten-all / square-off (including orphaned positions of stopped instances).
+- `app/control/` — operator control. `commands.py` holds pure parsers; `telegram_bot.py` (`TelegramBot`) long-polls Telegram, obeys only `TELEGRAM_CHAT_ID`, needs an inline Confirm for anything that trades or changes risk, and discards the offline backlog at startup. Manual orders go through `StrategyEngine.manual_order()`, which uses a `MANUAL` strategy instance per symbol, so they get the same recovery, protection and square-off. Alerts for fills and rejections come from `OrderManager.add_observer()` in the container.
 - `app/scheduler.py` — daily jobs that run once per trading day inside a time window (session refresh, instrument sync, square-off, EOD report); a failing job retries until its window closes.
 
 Runner invariants worth preserving: every event for an instance (tick, candle timer, fill, order update, flatten) is serialized by `StrategyRunner._lock`; only one working order per instance (`has_pending_order`); stop/target live in persisted `state["stop"]/["target"]` and are enforced on every tick; repeated broker rejections trigger an exponential cooldown; 5 consecutive strategy exceptions disable the instance (flattened, status `DISABLED`). At most one `ACTIVE` instance per instrument (partial unique index), which keeps broker reconciliation unambiguous.
+
+Backtesting: `backtest/engine.py` `SymbolSimulator` steps one strategy through candles (fills at the next bar's open, stop/target from bar ranges, MIS square-off at 15:15). `backtest/portfolio.py` steps many symbols in time order with a shared max-positions gate, mirroring live risk. Yahoo data (`backtest/feed.py`) is cached in `backtest/.cache`, and unadjusted splits are repaired. Research results and their caveats live in `docs/strategies.md`; don't present backtest numbers without the sample size and out-of-sample split.
 
 Persistence: `strategy_instance` (config, params, position, JSON state, status), `orders`, `fills`, `kv_store`, `instrument`. Change models in `app/models/__init__.py`, then `make migration msg=...`.
 

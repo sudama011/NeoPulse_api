@@ -13,9 +13,22 @@ class CreateStrategyRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     timeframe: int = Field(5, description="Candle size in minutes: 1, 3, 5, 10, 15, 30, 60")
     product: ProductType = ProductType.MIS
-    risk_per_trade_pct: float = Field(0.01, gt=0, le=0.05)
+    risk_per_trade_pct: float = Field(0.01, gt=0, le=1.0)
     leverage: float = Field(1.0, ge=1.0, le=5.0)
     name: Optional[str] = None
+
+
+class BulkCreateRequest(BaseModel):
+    """One instance per symbol; pair with MAX_OPEN_POSITIONS to cap concurrent positions."""
+
+    strategy_type: str = Field(..., examples=["ORB"])
+    symbols: list[str] = Field(..., min_length=1, max_length=200)
+    capital_per_symbol: float = Field(..., gt=0)
+    params: dict[str, Any] = Field(default_factory=dict)
+    timeframe: int = 15
+    product: ProductType = ProductType.MIS
+    risk_per_trade_pct: float = Field(1.0, gt=0, le=1.0)
+    leverage: float = Field(1.0, ge=1.0, le=5.0)
 
 
 class StopStrategyRequest(BaseModel):

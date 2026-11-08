@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
 from app.api.schemas import (
+    BulkCreateRequest,
     CreateStrategyRequest,
     KillSwitchRequest,
     OrderOut,
@@ -74,6 +75,29 @@ async def create_instance(body: CreateStrategyRequest, c: Container = Depends(co
     except (EngineError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     return _instance_out(row, c)
+
+
+@router.post("/strategies/bulk", tags=["Strategies"])
+async def create_bulk(body: BulkCreateRequest, c: Container = Depends(container)):
+    created, errors = [], {}
+    for symbol in body.symbols:
+        try:
+            row = await c.engine.create(
+                NewInstance(
+                    strategy_type=body.strategy_type,
+                    symbol=symbol,
+                    capital=body.capital_per_symbol,
+                    params=body.params,
+                    timeframe=body.timeframe,
+                    product=body.product,
+                    risk_per_trade_pct=body.risk_per_trade_pct,
+                    leverage=body.leverage,
+                )
+            )
+            created.append({"id": row.id, "symbol": row.symbol})
+        except (EngineError, ValueError) as e:
+            errors[symbol] = str(e)
+    return {"created": created, "errors": errors}
 
 
 @router.post("/strategies/{instance_id}/stop", tags=["Strategies"])

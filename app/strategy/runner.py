@@ -231,8 +231,8 @@ class StrategyRunner:
         return self._task is not None and not self._task.done()
 
     async def _warm_up(self) -> None:
-        need = self.strategy.warmup + 5
-        if self.strategy.warmup <= 0:
+        need = max(self.strategy.warmup, self.strategy.history_bars) + 5
+        if need <= 5:
             return
         candles = await self._deps.history.candles(self.token, self.timeframe, need, self.cfg.segment)
         if len(candles) < self.strategy.warmup:
