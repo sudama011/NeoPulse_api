@@ -72,8 +72,8 @@ async def main():
                     tick = await asyncio.wait_for(subscription.get(), timeout=1.0)
 
                     # Print formatted tick
-                    ltp = tick.get("ltp", tick.get("last_price", "N/A"))
-                    vol = tick.get("vol", tick.get("volume", "N/A"))
+                    ltp = tick.get("ltp", "N/A")
+                    vol = tick.get("v", "N/A")
                     ts = tick.get("ltt", "N/A")
 
                     print(f"📈 TICK: {TEST_SYMBOL} | Price: {ltp} | Vol: {vol} | Time: {ts}")

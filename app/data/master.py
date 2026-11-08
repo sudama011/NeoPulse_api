@@ -91,6 +91,10 @@ class MasterDataManager:
             async with kotak_limiter:
                 csv_url = await asyncio.to_thread(kotak_adapter.client.scrip_master, exchange_segment=EXCHANGE_NSE)
 
+            # SDK v3 returns the CSV URL string on success, or an error dict.
+            if not isinstance(csv_url, str):
+                raise RuntimeError(f"scrip_master failed: {csv_url}")
+
             logger.info(f"⬇️ Downloading CSV from: {csv_url}")
             async with httpx.AsyncClient() as client:
                 resp = await client.get(csv_url, timeout=30.0)

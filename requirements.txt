@@ -6,7 +6,7 @@ httpx
 pyotp
 cryptography
 pydantic-settings
-neo_api_client @ git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.1
+kotakneoapi==3.0.13  # Kotak Neo SDK v3 (import name: neo_api_client)
 yfinance
 
 pandas

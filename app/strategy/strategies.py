@@ -165,6 +165,7 @@ class GridAccumulatorStrategy(BaseStrategy):
         if ltp <= 0:
             return
 
+        logger.info(f".Tick: {ltp} | Position: {self.position} | Avg Price: {self.avg_price}")
         # --- State Reset on Flat Position ---
         if self.position == 0 and self.buy_count > 0:
             self.buy_count = 0
