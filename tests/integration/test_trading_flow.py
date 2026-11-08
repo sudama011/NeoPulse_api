@@ -242,12 +242,14 @@ async def test_strategy_entry_pending_guard_and_stop_loss(sf):
     await drive(s, 100.5)  # order still working -> no duplicate entry
     assert len(s.broker.requests) == 1
     await s.oms.on_broker_update(s.broker.fill(s.broker.last_order_id(), 10, 100.0))
+    await s.oms.drain()
     assert runner.position.qty == 10 and runner.state["stop"] == 95.0
 
     await drive(s, 94.9)  # stop hit -> market exit
     exit_req = s.broker.requests[-1]
     assert (exit_req.side, exit_req.qty) == (Side.SELL, 10)
     await s.oms.on_broker_update(s.broker.fill(s.broker.last_order_id(), 10, 94.9))
+    await s.oms.drain()
     assert runner.position.qty == 0 and "stop" not in runner.state
 
     async with sf() as db:
@@ -356,3 +358,75 @@ async def test_reconciler_adopts_broker_position_after_confirmation(sf):
     await rec.reconcile()
     assert any("Untracked" in m for _, m in s.notifier.messages)
     await s.engine.shutdown()
+
+
+# ---------------------------------------------------------------------- failure-mode regressions
+async def test_concurrent_events_never_double_submit(sf):
+    s = await build(sf)
+    iid = await make_instance(s, qty=10)
+    runner = s.engine.runners[iid]
+    await asyncio.gather(*(runner.on_tick(tick(100.0)) for _ in range(5)))
+    assert len(s.broker.requests) == 1
+    await s.engine.shutdown()
+
+
+async def test_rejections_trigger_cooldown_instead_of_order_storm(sf):
+    s = await build(sf)
+    iid = await make_instance(s)
+    runner = s.engine.runners[iid]
+    await s.positions.adopt(iid, 10, 100.0)
+    runner.state["stop"] = 95.0
+    for _ in range(5):
+        s.broker.fail_next = OrderRejected("exchange down")
+        await runner.on_tick(tick(90.0))
+        await s.oms.drain()
+    assert len(s.broker.requests) == 1  # later ticks are inside the cooldown window
+    await s.engine.shutdown()
+
+
+async def test_in_flight_order_is_not_failed_by_reconciliation(sf):
+    s = await build(sf)
+    iid = await make_instance(s)
+    gate = asyncio.Event()
+    original = s.broker.place_order
+
+    async def slow_place(req):
+        await gate.wait()
+        return await original(req)
+
+    s.broker.place_order = slow_place
+    submit_task = asyncio.create_task(submit(s, instance_id=iid))
+    await asyncio.sleep(0.05)
+    (view,) = s.oms.open_orders(iid)
+    view.created_at -= timedelta(minutes=5)
+    await s.oms.sync_with_broker()
+    assert view.status is OrderStatus.PENDING
+    gate.set()
+    assert (await submit_task).status is OrderStatus.OPEN
+    await s.engine.shutdown()
+
+
+async def test_live_order_missing_from_book_is_not_assumed_dead(sf):
+    s = await build(sf)
+    iid = await make_instance(s)
+    view = await submit(s, instance_id=iid)
+    s.broker.book.clear()
+    view.last_seen -= 1000
+    await s.oms.sync_with_broker()
+    assert view.status is OrderStatus.OPEN and s.oms.open_orders(iid)
+    await s.engine.shutdown()
+
+
+async def test_square_off_includes_orphaned_positions(sf):
+    s = await build(sf)
+    iid = await make_instance(s)
+    await s.engine.stop(iid, flatten=False)
+    await s.positions.adopt(iid, 4, 100.0)
+    s.broker.auto_fill_price = 101.0
+    await s.engine.square_off_intraday()
+    assert s.positions.get(iid).qty == 0
+
+
+def test_settings_reject_entry_cutoff_after_square_off():
+    with pytest.raises(ValueError, match="ENTRY_CUTOFF"):
+        Settings(ENTRY_CUTOFF="15:20", SQUARE_OFF_TIME="15:15")

@@ -105,6 +105,7 @@ class Container:
         logger.info("🛑 Shutting down (positions are left as-is and resumed on restart)")
         await self.tasks.shutdown()
         await self.engine.shutdown()
+        await self.oms.close()
         await self.feed.stop()
         await self.broker.stop()
         await self.notifier.close()
@@ -132,6 +133,7 @@ class Container:
         if self.instruments.count == 0:
             await self._sync_instruments()
         await self.oms.recover()
+        await self.engine.register_active()
         if self.reconciler:
             await self.reconciler.reconcile(startup=True)
         await self.feed.start()

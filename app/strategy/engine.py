@@ -77,6 +77,7 @@ class StrategyEngine:
             history=history,
             save_state=self._save_state,
             on_disable=self.disable,
+            alert=lambda message: notifier.send(message, level="ERROR"),
         )
         self.runners: dict[str, StrategyRunner] = {}
         self._failed: dict[str, str] = {}  # instance_id -> last start error
@@ -98,6 +99,13 @@ class StrategyEngine:
         for row in rows:
             if row.id not in self.runners:
                 await self._start_runner(row)
+
+    async def register_active(self) -> None:
+        """Marks ACTIVE instances as owners of their tokens (before runners start)."""
+        async with self._sf() as db:
+            rows = (await db.execute(select(StrategyInstance).where(StrategyInstance.status == ACTIVE))).scalars().all()
+        for row in rows:
+            self.positions.register(row.id, row.token)
 
     async def tick_timers(self) -> None:
         now = now_ist()
@@ -127,9 +135,11 @@ class StrategyEngine:
         except Exception as e:
             first_failure = row.id not in self._failed
             self._failed[row.id] = str(e)
-            logger.exception("Failed to start %s; will retry", row.name)
             if first_failure:
+                logger.exception("Failed to start %s; will retry every 30s", row.name)
                 self._notifier.send(f"Strategy {row.name} failed to start: {e}", level="ERROR")
+            else:
+                logger.warning("Start retry failed for %s: %s", row.name, e)
             return False
 
     # ------------------------------------------------------------------ instance management
@@ -256,19 +266,25 @@ class StrategyEngine:
             self._notifier.send(f"Flatten all ({reason}): {len(failures)} position(s) NOT closed", level="CRITICAL")
 
     async def square_off_intraday(self) -> None:
-        """End-of-day exit for MIS positions (avoids broker auto square-off)."""
-        targets = [r for r in self.runners.values() if r.cfg.product is ProductType.MIS and r.position.qty != 0]
-        if not targets:
+        """End-of-day exit for MIS positions (avoids broker auto square-off). Raises if incomplete."""
+        runners = [r for r in self.runners.values() if r.cfg.product is ProductType.MIS and r.position.qty != 0]
+        orphans = [iid for iid in self.positions.open_positions() if iid not in self.runners]
+        if not runners and not orphans:
             return
-        logger.warning("⏰ Intraday square-off: %d positions", len(targets))
-        results = await asyncio.gather(*(r.flatten("EOD_SQUARE_OFF") for r in targets), return_exceptions=True)
-        failed = [t.cfg.name for t, ok in zip(targets, results) if ok is not True]
+        logger.warning("⏰ Intraday square-off: %d running + %d orphaned", len(runners), len(orphans))
+        names = [r.cfg.name for r in runners] + orphans
+        results = await asyncio.gather(
+            *(r.flatten("EOD_SQUARE_OFF") for r in runners),
+            *(self._liquidate(iid, "EOD_SQUARE_OFF", only_product=ProductType.MIS) for iid in orphans),
+            return_exceptions=True,
+        )
+        failed = [n for n, ok in zip(names, results) if ok is not True]
         if failed:
             self._notifier.send(f"Square-off incomplete for: {', '.join(failed)}", level="CRITICAL")
-        else:
-            self._notifier.send(f"Square-off done for {len(targets)} position(s)", level="SUCCESS")
+            raise RuntimeError(f"square-off incomplete: {failed}")  # scheduler retries until market close
+        self._notifier.send(f"Square-off done for {len(names)} position(s)", level="SUCCESS")
 
-    async def _liquidate(self, instance_id: str, reason: str) -> bool:
+    async def _liquidate(self, instance_id: str, reason: str, only_product: Optional[ProductType] = None) -> bool:
         """Closes a position that has no running strategy."""
         pos = self.positions.get(instance_id)
         if pos.qty == 0:
@@ -277,6 +293,8 @@ class StrategyEngine:
             row = await db.get(StrategyInstance, instance_id)
         if row is None:
             return False
+        if only_product is not None and row.product != only_product.value:
+            return True
         await self.oms.cancel_all(instance_id)
         await self.oms.wait_until_idle(instance_id)
         await self.oms.submit(

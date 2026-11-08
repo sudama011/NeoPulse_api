@@ -1,8 +1,10 @@
 from datetime import date
 from typing import Optional
 
-from pydantic import computed_field, field_validator
+from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.clock import parse_hhmm
 
 
 class Settings(BaseSettings):
@@ -47,6 +49,12 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_to_none(cls, v):
         return v or None
+
+    @model_validator(mode="after")
+    def _check_windows(self) -> "Settings":
+        if parse_hhmm(self.ENTRY_CUTOFF) > parse_hhmm(self.SQUARE_OFF_TIME):
+            raise ValueError("ENTRY_CUTOFF must not be later than SQUARE_OFF_TIME")
+        return self
 
     @computed_field
     @property

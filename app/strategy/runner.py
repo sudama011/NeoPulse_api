@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
@@ -59,6 +60,7 @@ class RunnerDeps:
     history: HistoryService
     save_state: Callable[[str, dict], Awaitable[None]]
     on_disable: Callable[[str, str], Awaitable[None]]
+    alert: Callable[[str], None] = lambda message: None
 
 
 class StrategyRunner:
@@ -76,6 +78,11 @@ class StrategyRunner:
         self._warming = False
         self._accepting = False
         self._errors = 0
+        self._rejects = 0
+        self._cooldown_until = 0.0
+        # Serialises every event (tick, candle timer, fill, flatten) for this instance, so the
+        # strategy never runs concurrently with itself and cannot double-submit.
+        self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
         self._saved_state = json.dumps(self.state, sort_keys=True, default=str)
         self.strategy: Strategy = strategy_cls(self, cfg.params)
@@ -122,6 +129,9 @@ class StrategyRunner:
             return False
         if self.has_pending_order:
             self.logger.info("Signal %s skipped: an order is already working", reason)
+            return False
+        if time.monotonic() < self._cooldown_until:
+            self.logger.warning("Signal %s skipped: cooling down after %d rejection(s)", reason, self._rejects)
             return False
         qty = self.instrument.round_qty(qty)
         if qty <= 0:
@@ -205,32 +215,50 @@ class StrategyRunner:
 
     # ------------------------------------------------------------------ events
     async def on_tick(self, tick: Tick) -> None:
-        self.last_tick = tick
-        candle = self._builder.update(tick)
-        if candle is not None:
-            await self._guard(self.strategy.process_candle(candle), "on_candle")
-        await self._enforce_protection(tick.ltp)
-        await self._guard(self.strategy.on_tick(tick), "on_tick")
-        await self._persist_state()
-
-    async def on_timer(self, now: datetime) -> None:
-        candle = self._builder.flush(now)
-        if candle is not None:
-            await self._guard(self.strategy.process_candle(candle), "on_candle")
+        async with self._lock:
+            self.last_tick = tick
+            candle = self._builder.update(tick)
+            if candle is not None:
+                await self._guard(self.strategy.process_candle(candle), "on_candle")
+            await self._enforce_protection(tick.ltp)
+            await self._guard(self.strategy.on_tick(tick), "on_tick")
             await self._persist_state()
 
+    async def on_timer(self, now: datetime) -> None:
+        async with self._lock:
+            candle = self._builder.flush(now)
+            if candle is not None:
+                await self._guard(self.strategy.process_candle(candle), "on_candle")
+                await self._persist_state()
+
     async def on_fill(self, fill: Fill) -> None:
-        if self.position.qty == 0:
-            self.state.pop("stop", None)
-            self.state.pop("target", None)
-        await self._guard(self.strategy.on_fill(fill), "on_fill")
-        await self._persist_state()
+        async with self._lock:
+            self._rejects, self._cooldown_until = 0, 0.0
+            if self.position.qty == 0:
+                self._clear_protection()
+            await self._guard(self.strategy.on_fill(fill), "on_fill")
+            await self._persist_state()
 
     async def on_order_update(self, order: OrderView) -> None:
-        if order.status in (OrderStatus.REJECTED, OrderStatus.FAILED, OrderStatus.CANCELLED):
+        if order.status not in (OrderStatus.REJECTED, OrderStatus.FAILED, OrderStatus.CANCELLED):
+            return
+        async with self._lock:
+            if order.status in (OrderStatus.REJECTED, OrderStatus.FAILED):
+                self._rejects += 1
+                backoff = min(2**self._rejects, 300)
+                self._cooldown_until = time.monotonic() + backoff
+                self.logger.error(
+                    "Order %s %s (%s); pausing orders for %ss", order.id, order.status, order.message, backoff
+                )
+                if self._rejects == 3:
+                    self._deps.alert(f"{self.cfg.name}: 3 consecutive order rejections. Last: {order.message}")
             if self.position.qty == 0 and not self.has_pending_order:
-                self.state.pop("stop", None)
-                self.state.pop("target", None)
+                self._clear_protection()
+            await self._persist_state()
+
+    def _clear_protection(self) -> None:
+        self.state.pop("stop", None)
+        self.state.pop("target", None)
 
     # ------------------------------------------------------------------ protection & flatten
     async def _enforce_protection(self, ltp: float) -> None:
@@ -246,6 +274,10 @@ class StrategyRunner:
 
     async def flatten(self, reason: str) -> bool:
         """Cancels working orders and closes the position at market. Returns True if flat."""
+        async with self._lock:
+            return await self._flatten_locked(reason)
+
+    async def _flatten_locked(self, reason: str) -> bool:
         oms = self._deps.oms
         await oms.cancel_all(self.instance_id)
         if not await oms.wait_until_idle(self.instance_id, timeout=15):

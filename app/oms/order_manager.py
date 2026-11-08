@@ -14,6 +14,7 @@ Guarantees:
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -114,6 +115,8 @@ class OrderManager:
         self._by_broker_id: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._listeners: dict[str, OrderListener] = {}
+        self._events: asyncio.Queue[tuple[OrderView, Optional[Fill]]] = asyncio.Queue()
+        self._dispatcher: Optional[asyncio.Task] = None
         self._cancel_requested: set[str] = set()
         broker.set_order_handler(self.on_broker_update)
 
@@ -311,6 +314,9 @@ class OrderManager:
         today_start = start_of_day(today_ist())
         for row in rows:
             view = OrderView.from_row(row)
+            if view.status is OrderStatus.PENDING:
+                # Crashed between write-ahead and broker ack: outcome unknown, resolve via tag.
+                view.status = OrderStatus.UNKNOWN
             if row.created_at < today_start:
                 # DAY orders expire at the exchange overnight.
                 await self._finalize(view, OrderStatus.CANCELLED, "expired (previous session)")
@@ -342,15 +348,19 @@ class OrderManager:
                 bo = by_tag.get(view.id) or (by_id.get(view.broker_order_id) if view.broker_order_id else None)
                 if bo is not None:
                     updated.append((view, await self._apply(view, bo)))
-                elif view.status in (OrderStatus.PENDING, OrderStatus.UNKNOWN):
+                elif view.status is OrderStatus.PENDING:
+                    continue  # submit() is still in flight; it owns this order's next state
+                elif view.status is OrderStatus.UNKNOWN:
                     if view.age_seconds > UNKNOWN_RESOLVE_SECONDS:
                         await self._finalize_locked(view, OrderStatus.FAILED, "not found at broker")
                         updated.append((view, None))
-                elif (
-                    time.monotonic() - view.last_seen > MISSING_OPEN_SECONDS and view.age_seconds > MISSING_OPEN_SECONDS
-                ):
-                    await self._finalize_locked(view, OrderStatus.CANCELLED, "missing from broker order book")
-                    updated.append((view, None))
+                elif time.monotonic() - view.last_seen > MISSING_OPEN_SECONDS:
+                    view.last_seen = time.monotonic()  # report at most once per window
+                    if self._broker.is_paper:  # paper book is in-memory and lost on restart
+                        await self._finalize_locked(view, OrderStatus.CANCELLED, "missing from paper order book")
+                        updated.append((view, None))
+                    else:  # never assume a live order is dead: that risks double exposure
+                        logger.error("Order %s (%s) missing from broker order book", view.id, view.broker_order_id)
 
         for view, fill in updated:
             await self._notify(view, fill)
@@ -420,13 +430,37 @@ class OrderManager:
 
     # ------------------------------------------------------------------ listeners
     async def _notify(self, view: OrderView, fill: Optional[Fill] = None) -> None:
-        """Called WITHOUT the lock held, so listeners may submit new orders."""
-        listener = self._listeners.get(view.instance_id)
-        if listener is None:
+        """
+        Queues listener callbacks for the dispatcher task. Delivery is ordered and never
+        re-enters the caller, so a strategy that is mid-`submit` (holding its own lock)
+        cannot deadlock when the broker reports a fill synchronously.
+        """
+        if view.instance_id not in self._listeners:
             return
-        if fill is not None:
-            await _safe(listener.on_fill(fill))
-        await _safe(listener.on_order_update(view))
+        if self._dispatcher is None or self._dispatcher.done():
+            self._dispatcher = asyncio.create_task(self._dispatch(), name="oms-dispatcher")
+        self._events.put_nowait((view, fill))
+
+    async def _dispatch(self) -> None:
+        while True:
+            view, fill = await self._events.get()
+            listener = self._listeners.get(view.instance_id)
+            if listener is not None:
+                if fill is not None:
+                    await _safe(listener.on_fill(fill))
+                await _safe(listener.on_order_update(view))
+            self._events.task_done()
+
+    async def drain(self) -> None:
+        """Waits until all queued listener notifications have been delivered."""
+        if self._dispatcher is not None and not self._dispatcher.done():
+            await self._events.join()
+
+    async def close(self) -> None:
+        if self._dispatcher is not None:
+            self._dispatcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._dispatcher
 
 
 _TERMINAL = [s for s in OrderStatus if s.is_terminal]
