@@ -1,73 +1,64 @@
 """
-Strategy Registry — Plug-and-Play Pattern.
+Strategy registry.
 
-To add a new strategy:
-1. Create a file in app/strategy/ (e.g., my_strategy.py)
-2. Subclass BaseStrategy
-3. Decorate with @register_strategy("MY_STRATEGY")
+Add a strategy by creating a module in `app/strategy/library/`:
 
-That's it. The engine will find it automatically.
-
-Example:
     from app.strategy import register_strategy
-    from app.strategy.base import BaseStrategy
+    from app.strategy.base import Strategy
 
-    @register_strategy("GOLDEN_CROSS")
-    class GoldenCrossStrategy(BaseStrategy):
-        async def on_tick(self, tick):
-            ...
+    @register_strategy("MY_STRATEGY")
+    class MyStrategy(Strategy):
+        warmup = 30
+        async def on_candle(self, candle): ...
+
+Modules in the library package are imported automatically on first lookup.
 """
 
 import importlib
 import logging
 import pkgutil
-from typing import Dict, Type
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.strategy.base import Strategy
 
 logger = logging.getLogger("StrategyRegistry")
 
-# --- The Registry ---
-_STRATEGY_REGISTRY: Dict[str, Type] = {}
+_REGISTRY: dict[str, type["Strategy"]] = {}
+_discovered = False
 
 
 def register_strategy(name: str):
-    """Decorator to register a strategy class by name."""
-
     def decorator(cls):
         key = name.upper()
-        if key in _STRATEGY_REGISTRY:
-            logger.warning(f"⚠️ Strategy '{key}' already registered. Overwriting with {cls.__name__}.")
-        _STRATEGY_REGISTRY[key] = cls
-        logger.debug(f"📝 Registered strategy: {key} -> {cls.__name__}")
+        if key in _REGISTRY and _REGISTRY[key] is not cls:
+            raise ValueError(f"Strategy name '{key}' already registered by {_REGISTRY[key].__name__}")
+        _REGISTRY[key] = cls
         return cls
 
     return decorator
 
 
-def get_strategy_class(name: str) -> Type:
-    """Lookup a strategy class by registered name."""
+def _discover() -> None:
+    global _discovered
+    if _discovered:
+        return
+    from app.strategy import library
+
+    for mod in pkgutil.iter_modules(library.__path__):
+        if not mod.name.startswith("_"):
+            importlib.import_module(f"{library.__name__}.{mod.name}")  # errors surface loudly
+    _discovered = True
+
+
+def get_strategy_class(name: str) -> type["Strategy"]:
+    _discover()
     key = name.upper()
-    if key not in _STRATEGY_REGISTRY:
-        available = ", ".join(sorted(_STRATEGY_REGISTRY.keys())) or "(none)"
-        raise ValueError(f"Unknown strategy '{key}'. Available: {available}")
-    return _STRATEGY_REGISTRY[key]
+    if key not in _REGISTRY:
+        raise ValueError(f"Unknown strategy '{key}'. Available: {', '.join(sorted(_REGISTRY)) or '(none)'}")
+    return _REGISTRY[key]
 
 
-def list_strategies() -> Dict[str, str]:
-    """Returns {name: class_name} for all registered strategies."""
-    return {k: v.__name__ for k, v in sorted(_STRATEGY_REGISTRY.items())}
-
-
-def _auto_discover():
-    """Import all modules in this package so @register_strategy decorators execute."""
-    package_path = __path__
-    for _importer, modname, _ispkg in pkgutil.iter_modules(package_path):
-        if modname.startswith("_"):
-            continue
-        try:
-            importlib.import_module(f"{__name__}.{modname}")
-        except Exception as e:
-            logger.error(f"❌ Failed to import strategy module '{modname}': {e}")
-
-
-# Auto-discover on package import
-_auto_discover()
+def list_strategies() -> dict[str, str]:
+    _discover()
+    return {k: (v.__doc__ or v.__name__).strip().splitlines()[0] for k, v in sorted(_REGISTRY.items())}

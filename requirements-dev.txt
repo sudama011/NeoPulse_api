@@ -1,17 +1,15 @@
-# Base requirements for both dev and prod
 -r requirements.txt
 
-# --- Dev Tools ---
+# Backtesting
+yfinance==0.2.64
+plotly
+
+# Quality
 black==25.12.0
 isort==7.0.0
 flake8==7.3.0
 mypy==1.19.1
-autopep8==2.3.2
-yfinance==0.2.64
 
-# --- Test Tools ---
-
-pytest
-pytest-asyncio
-pytest-mock
-pytest-cov
+# Tests
+pytest==9.0.2
+pytest-asyncio==1.3.0

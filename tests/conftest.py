@@ -1,36 +1,37 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+import os
 
-import pytest
+# Required settings get harmless defaults so tests never need real credentials.
+for key, value in {
+    "POSTGRES_USER": "test",
+    "POSTGRES_PASSWORD": "test",
+    "NEO_CONSUMER_KEY": "test",
+    "NEO_UCC": "test",
+    "NEO_MOBILE": "+910000000000",
+    "NEO_MPIN": "0000",
+    "NEO_TOTP_SEED": "JBSWY3DPEHPK3PXP",
+}.items():
+    os.environ.setdefault(key, value)
+
+import pytest  # noqa: E402
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
+
+from app.models import Base  # noqa: E402
+
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://neopulse_test@localhost:55432/neopulse_test"
+)
 
 
-# 1. Force AsyncIO loop for pytest-asyncio
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-# 2. Mock the Broker Adapter
 @pytest.fixture
-def mock_broker():
-    """
-    Replaces the real KotakAdapter with a Mock.
-    """
-    mock = MagicMock()
-    mock.is_logged_in = True
-
-    # Async methods must return Awaitables
-    mock.place_order = AsyncMock(return_value={"stat": "Ok", "nOrdNo": "123456"})
-    mock.get_positions = AsyncMock(return_value={"data": []})
-    mock.get_limits = AsyncMock(return_value={"net": "100000"})
-
-    return mock
-
-
-# 3. Mock the Database Session
-@pytest.fixture
-def mock_db_session():
-    session = AsyncMock()
-    return session
+async def sf():
+    """Fresh schema per test on a real Postgres. Skips when no test database is reachable."""
+    engine = create_async_engine(TEST_DATABASE_URL)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:  # pragma: no cover - environment dependent
+        await engine.dispose()
+        pytest.skip(f"test database unavailable: {e}")
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()

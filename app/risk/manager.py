@@ -1,116 +1,138 @@
+"""
+Account-level risk.
+
+Rules apply to ENTRIES only. Exits (reducing exposure) are never blocked, otherwise a
+risk breach could trap the account in a losing position.
+
+Kill switch: tripped automatically when today's net P&L (realized - charges + unrealized)
+breaches MAX_DAILY_LOSS, or manually via the API. When tripped, all positions are
+flattened and new entries are refused for the rest of the day. The flag is persisted so a
+restart cannot silently re-enable trading.
+"""
+
 import logging
+import time
+from datetime import time as dtime
+from typing import Awaitable, Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.db.session import AsyncSessionLocal
-from app.execution.kotak import kotak_adapter
-from app.models.strategy import TradingSession
-from app.risk.sentinel import RiskSentinel
-from app.risk.sizer import PositionSizer
-from app.schemas.common import RiskConfig
+from app.broker.base import Broker
+from app.core.clock import MARKET_OPEN, is_trading_day, now_ist, parse_hhmm, today_ist
+from app.core.settings import Settings
+from app.core.tasks import fire_and_forget
+from app.models import KeyValue
+from app.notifications.notifier import Notifier
+from app.portfolio.book import DayPnl, PositionBook
 
-logger = logging.getLogger("RiskManager")
+logger = logging.getLogger("Risk")
+
+KILL_SWITCH_KEY = "kill_switch"
+PriceSource = Callable[[str], Optional[float]]
 
 
 class RiskManager:
-    def __init__(self):
-        # Default safe config until DB loads
-        self.config = RiskConfig(max_daily_loss=1000.0, max_concurrent_trades=3, risk_per_trade_pct=0.01)
+    def __init__(
+        self,
+        settings: Settings,
+        positions: PositionBook,
+        broker: Broker,
+        prices: PriceSource,
+        session_factory: async_sessionmaker,
+        notifier: Notifier,
+    ):
+        self._settings = settings
+        self._positions = positions
+        self._broker = broker
+        self._prices = prices
+        self._sf = session_factory
+        self._notifier = notifier
+        self.max_daily_loss = settings.MAX_DAILY_LOSS
+        self.max_open_positions = settings.MAX_OPEN_POSITIONS
+        self._entry_cutoff: dtime = parse_hhmm(settings.ENTRY_CUTOFF)
+        self.kill_switch = False
+        self.kill_reason: Optional[str] = None
+        self._margin_cache: tuple[float, Optional[float]] = (0.0, None)
+        self._on_kill: Optional[Callable[[str], Awaitable[None]]] = None
 
-        self.sentinel = RiskSentinel(self.config)
-        self.sizer = PositionSizer()
-        self.is_initialized = False
-        self.total_allocated_capital = 100000.0
+    def on_kill(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        """Registers the action to take when the kill switch trips (flatten everything)."""
+        self._on_kill = callback
 
-    async def initialize(self):
-        """
-        Loads config from active TradingSession and syncs with Broker.
-        """
-        logger.info("🛡️ Initializing Risk Manager...")
+    async def load(self) -> None:
+        async with self._sf() as db:
+            row = await db.get(KeyValue, KILL_SWITCH_KEY)
+        if row and isinstance(row.value, dict) and row.value.get("date") == today_ist().isoformat():
+            self.kill_switch = bool(row.value.get("active"))
+            self.kill_reason = row.value.get("reason")
+            if self.kill_switch:
+                logger.critical("💀 Kill switch is ACTIVE from earlier today: %s", self.kill_reason)
 
-        # 1. Load Config from active TradingSession
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(TradingSession).where(TradingSession.is_active == True))
-            trading_session = result.scalars().first()
+    # ------------------------------------------------------------------ checks
+    def day_pnl(self) -> DayPnl:
+        return self._positions.day_pnl(self._prices)
 
-            if trading_session:
-                self.config.max_daily_loss = float(trading_session.max_daily_loss)
-                self.config.max_concurrent_trades = int(trading_session.max_concurrent_trades)
-                self.total_allocated_capital = float(trading_session.capital)
+    async def check_entry(self, instance_id: str, qty: int, price: float, leverage: float = 1.0) -> Optional[str]:
+        """Returns None if the entry is allowed, else a human-readable rejection reason."""
+        if self.kill_switch:
+            return f"kill switch active ({self.kill_reason})"
 
-                logger.info(
-                    f"✅ Risk Config Loaded from Session {trading_session.id}: "
-                    f"Cap={self.total_allocated_capital}, MaxLoss={self.config.max_daily_loss}"
-                )
-            else:
-                logger.warning("⚠️ No active TradingSession found. Using default risk config.")
+        now = now_ist()
+        if not is_trading_day(now.date(), self._settings.holidays):
+            return "not a trading day"
+        if not (MARKET_OPEN <= now.time() < self._entry_cutoff):
+            return f"outside entry window {MARKET_OPEN:%H:%M}-{self._entry_cutoff:%H:%M}"
 
-        # 2. Sync State with Broker
-        await self.sentinel.sync_state()
-        self.is_initialized = True
+        pnl = self.day_pnl()
+        if pnl.net <= -self.max_daily_loss:
+            await self.trip(f"daily loss {pnl.net:.2f} breached limit {self.max_daily_loss:.2f}")
+            return "daily loss limit reached"
 
-    async def calculate_size(
-        self, symbol: str, entry: float, sl: float, confidence: float = 1.0, leverage: float = 1.0
-    ) -> int:
-        """
-        Smart Sizing wrapper.
+        open_positions = self._positions.open_positions()
+        if instance_id not in open_positions and len(open_positions) >= self.max_open_positions:
+            return f"max open positions ({self.max_open_positions}) reached"
 
-        Args:
-            symbol: Trading symbol
-            entry: Entry price
-            sl: Stop loss price
-            confidence: Confidence multiplier (0.5 to 2.0)
-            leverage: Strategy-specific leverage
-        """
-        from app.data.master import master_data  # Lazy import
+        margin = await self._available_margin()
+        required = qty * price / max(leverage, 1.0)
+        if margin is not None and required > margin:
+            return f"insufficient margin: need {required:.0f}, available {margin:.0f}"
+        return None
 
-        # 1. Get Live Limits
-        available_cash = self.total_allocated_capital
-        try:
-            if kotak_adapter.is_logged_in:
-                limits = await kotak_adapter.get_limits()
-                # Kotak 'net' usually implies available margin
-                net_val = limits.get("net", 0.0)
-                if net_val:
-                    available_cash = float(net_val)
-        except Exception:
-            pass  # Fallback to allocated capital
+    async def _available_margin(self) -> Optional[float]:
+        fetched_at, value = self._margin_cache
+        if time.monotonic() - fetched_at > 10:
+            value = await self._broker.available_margin()
+            self._margin_cache = (time.monotonic(), value)
+        return value
 
-        # 2. Get Slot Info
-        # open_slots = Total Allowed - Currently Used
-        open_slots = max(0, self.config.max_concurrent_trades - self.sentinel.open_trades)
+    # ------------------------------------------------------------------ kill switch
+    async def monitor(self) -> None:
+        """Periodic job: trips the kill switch on a daily-loss breach (includes unrealized)."""
+        if self.kill_switch:
+            return
+        pnl = self.day_pnl()
+        if pnl.net <= -self.max_daily_loss:
+            await self.trip(f"daily loss {pnl.net:.2f} breached limit {self.max_daily_loss:.2f}")
 
-        # 3. Get Instrument Data
-        inst_data = master_data.get_data(symbol)
-        lot_size = inst_data.get("lot_size", 1) if inst_data else 1
+    async def trip(self, reason: str) -> None:
+        if self.kill_switch:
+            return
+        self.kill_switch, self.kill_reason = True, reason
+        await self._save(True, reason)
+        logger.critical("💀 KILL SWITCH: %s", reason)
+        self._notifier.send(f"KILL SWITCH ACTIVATED\n{reason}\nFlattening all positions.", level="CRITICAL")
+        if self._on_kill:
+            fire_and_forget(self._on_kill(reason))  # may be called from inside a strategy task
 
-        # 4. Calculate
-        return self.sizer.calculate_qty(
-            total_capital=self.total_allocated_capital,
-            available_capital=available_cash,
-            max_slots=self.config.max_concurrent_trades,
-            open_slots=open_slots,
-            entry_price=entry,
-            sl_price=sl,
-            lot_size=lot_size,
-            confidence=confidence,
-            risk_per_trade_pct=self.config.risk_per_trade_pct,
-            leverage=leverage,
-        )
+    async def reset(self) -> None:
+        self.kill_switch, self.kill_reason = False, None
+        await self._save(False, None)
+        logger.warning("🟢 Kill switch reset manually")
+        self._notifier.send("Kill switch reset. Entries are allowed again.", level="WARNING")
 
-    async def can_trade(self, symbol: str, qty: int, price: float) -> bool:
-        if not self.is_initialized:
-            logger.warning("⚠️ Risk Manager not initialized! Blocking trade.")
-            return False
-        value = qty * price
-        return await self.sentinel.check_pre_trade(symbol, qty, value)
-
-    async def on_execution_failure(self):
-        await self.sentinel.on_execution_failure()
-
-    async def on_trade_close(self, pnl: float):
-        await self.sentinel.update_post_trade_close(pnl)
-
-
-# Global Instance
-risk_manager = RiskManager()
+    async def _save(self, active: bool, reason: Optional[str]) -> None:
+        value = {"active": active, "reason": reason, "date": today_ist().isoformat()}
+        async with self._sf() as db, db.begin():
+            stmt = insert(KeyValue).values(key=KILL_SWITCH_KEY, value=value)
+            await db.execute(stmt.on_conflict_do_update(index_elements=[KeyValue.key], set_={"value": value}))

@@ -12,7 +12,7 @@ from alembic import context
 sys.path.append(os.getcwd())
 from app.core.settings import settings
 from app.models.base import Base
-from app.models.config import SystemConfig
+import app.models  # noqa: F401  (registers all tables)
 
 
 # this is the Alembic Config object, which provides

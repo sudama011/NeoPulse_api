@@ -2,8 +2,9 @@ import atexit
 import json
 import logging
 import logging.handlers
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from queue import Queue
 
 from app.core.settings import settings
@@ -15,9 +16,9 @@ _log_listener = None
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         log_obj = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
-            "module": record.module,
+            "logger": record.name,
             "message": record.getMessage(),
         }
         if record.exc_info:
@@ -57,8 +58,9 @@ def setup_logging():
     root_logger = logging.getLogger()
     root_logger.setLevel(settings.LOG_LEVEL)
 
-    if root_logger.handlers:
-        root_logger.handlers = []
+    if _log_listener is not None:  # idempotent (tests / reload)
+        _log_listener.stop()
+    root_logger.handlers = []
 
     # 1. The Actual Destination (Blocking)
     console_handler = logging.StreamHandler(sys.stdout)
@@ -74,8 +76,13 @@ def setup_logging():
     queue_handler = logging.handlers.QueueHandler(log_queue)
     root_logger.addHandler(queue_handler)
 
-    # 4. The Listener (Background Thread)
-    _log_listener = logging.handlers.QueueListener(log_queue, console_handler)
+    # 4. Rotating file for post-mortems (one file per day, 14 days kept)
+    os.makedirs("logs", exist_ok=True)
+    file_handler = logging.handlers.TimedRotatingFileHandler("logs/neopulse.log", when="midnight", backupCount=14)
+    file_handler.setFormatter(JSONFormatter())
+
+    # 5. The Listener (Background Thread)
+    _log_listener = logging.handlers.QueueListener(log_queue, console_handler, file_handler)
     _log_listener.start()
 
     # Ensure clean shutdown of logging thread

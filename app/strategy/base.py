@@ -1,310 +1,204 @@
+"""
+Strategy SDK.
+
+A strategy only talks to its `StrategyContext`, which is implemented by the live runner
+(`app/strategy/runner.py`) and the backtester (`backtest/engine.py`). The same strategy
+code therefore runs unchanged in live, paper and backtest modes.
+
+Lifecycle (driven by the context):
+    setup()            parse params (constructor)
+    on_candle(c)       every CLOSED candle of `timeframe` minutes, after `warmup` candles
+    on_tick(t)         every tick (live) / candle close (backtest); optional
+    on_fill(f)         after each execution of this strategy's orders; optional
+
+Protective stop/target: call `self.set_protection(stop=..., target=...)` (or pass them to
+buy()/sell()). The context monitors them on every price update and exits at market when
+hit; they are persisted, so they survive restarts.
+"""
+
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Optional, Protocol
 
-from app.execution.engine import execution_engine
-from app.execution.kotak import kotak_adapter
-from app.risk.manager import risk_manager
-from app.schemas.execution import OrderResponse, OrderStatus
-
-logger = logging.getLogger("StrategyBase")
+from app.domain.models import Candle, Fill, OrderType, PositionState, Side, Tick
 
 
-class BaseStrategy(ABC):
-    """
-    The robust base class for all strategies.
+class StrategyContext(Protocol):
+    instance_id: str
+    symbol: str
+    token: str
+    timeframe: int
+    state: dict[str, Any]  # persisted strategy state (JSON-serialisable values only)
+    logger: logging.Logger
 
-    Features:
-    - Auto-Reconciliation: Syncs with Broker on startup.
-    - Smart Risk Checks: Auto-detects Entry vs. Exit to prevent blocking critical stops.
-    - Crash Protection: Catches logic errors to keep the engine running.
-    - Dual-Mode: Works with both live ticks (on_tick) and backtest candles (on_candle).
-    - Candle Buffer: Maintains rolling history for indicator calculations.
-    """
+    @property
+    def position(self) -> PositionState: ...
 
-    # Default warmup period — subclasses can override
-    WARMUP_PERIOD: int = 50
+    @property
+    def has_pending_order(self) -> bool: ...
 
-    def __init__(self, name: str, symbol: str, token: str, params: Dict[str, Any] = None, leverage: float = 1.0):
-        self.name = name
-        self.symbol = symbol
-        self.token = str(token)
-        self.params = params or {}
-        self.leverage = leverage  # Strategy-specific leverage
+    @property
+    def is_warming_up(self) -> bool: ...
 
-        # Internal State
-        self.position = 0  # Net Quantity (+ve Long, -ve Short)
-        self.avg_price = 0.0
-        self.is_active = True
-        self.last_trade_time: Optional[datetime] = None
+    def now(self) -> datetime: ...
 
-        # Candle Buffer (for indicator calculations in both modes)
-        self._max_history = params.get("max_history", 500) if params else 500
-        self.candles: deque = deque(maxlen=self._max_history)
+    def size(self, entry: float, stop: Optional[float], confidence: float) -> int: ...
 
-        # Crash Protection
-        self._error_count = 0
-        self._max_errors_before_stop = 5
+    async def submit(
+        self,
+        side: Side,
+        qty: int,
+        *,
+        reason: str,
+        order_type: OrderType = OrderType.MARKET,
+        price: float = 0.0,
+        is_exit: bool = False,
+    ) -> bool: ...
 
-        # Backtest mode flag (set by backtest engine)
-        self._backtest_mode = False
 
-    async def initialize(self):
-        """Lifecycle hook: Called by Engine before ticks start."""
-        await self.sync_position()
+class Strategy(ABC):
+    warmup: int = 50  # closed candles required before on_candle is called (may be set in setup)
+    history_size: ClassVar[int] = 500
 
-    async def sync_position(self):
-        """
-        CRITICAL: Fetches actual open position from Broker to prevent State Drift.
-        """
-        if not kotak_adapter.is_logged_in:
-            logger.warning(f"⚠️ {self.name}: Broker not logged in. Skipping Sync.")
-            return
+    def __init__(self, ctx: StrategyContext, params: dict[str, Any]):
+        self.ctx = ctx
+        self.params = dict(params or {})
+        self.log = ctx.logger
+        self.setup()  # may override self.warmup from params
+        self.candles: deque[Candle] = deque(maxlen=max(self.history_size, self.warmup + 1))
 
-        try:
-            response = await kotak_adapter.get_positions()
-            data = response.get("data", [])
-
-            if not data:
-                return
-
-            found = False
-            for pos in data:
-                # Match either Token or Symbol
-                p_token = str(pos.get("instrumentToken", ""))
-                p_symbol = pos.get("instrumentName", "")
-
-                if p_token == self.token or p_symbol == self.symbol:
-                    net_qty = int(pos.get("netQty", 0))
-
-                    if net_qty != 0:
-                        self.position = net_qty
-                        self.avg_price = float(pos.get("avgPrice", 0.0))
-                        logger.info(
-                            f"🔄 {self.name}: RECONCILED! Found existing position: {self.position} @ {self.avg_price}"
-                        )
-                        found = True
-                    break
-
-            if not found:
-                self.position = 0
-
-        except Exception as e:
-            logger.error(f"❌ {self.name}: Sync Failed: {e}")
+    # ------------------------------------------------------------------ hooks
+    def setup(self) -> None:
+        """Read `self.params` here."""
 
     @abstractmethod
-    async def on_tick(self, tick: Dict[str, Any]):
-        """Core Logic: Must be implemented by child strategy."""
-        pass
+    async def on_candle(self, candle: Candle) -> None: ...
 
-    async def on_candle(self, candle: Dict[str, Any]):
-        """
-        Called with a complete OHLCV candle (backtest or candle-aggregated live).
-        Default: appends to history and delegates to on_tick with LTP = close.
-        Override this in subclasses for candle-based logic.
-        """
+    async def on_tick(self, tick: Tick) -> None:
+        """Optional tick-level logic."""
+
+    async def on_fill(self, fill: Fill) -> None:
+        """Optional fill notification."""
+
+    # ------------------------------------------------------------------ framework entry
+    async def process_candle(self, candle: Candle) -> None:
         self.candles.append(candle)
-
-        # Convert candle to a tick-like dict so on_tick works
-        tick = {
-            "ltp": candle["close"],
-            "volume": candle.get("volume", 0),
-            "_ohlc": {"high": candle["high"], "low": candle["low"]},
-            "_candle": candle,
-        }
-        await self.on_tick(tick)
-
-    async def safe_on_tick(self, tick: Dict[str, Any]):
-        """Wrapper to prevent one bad math operation from killing the strategy loop."""
-        try:
-            await self.on_tick(tick)
-            self._error_count = 0  # Reset on success
-        except Exception as e:
-            self._error_count += 1
-            logger.error(f"🔥 {self.name} LOGIC ERROR: {e}", exc_info=True)
-
-            if self._error_count >= self._max_errors_before_stop:
-                logger.critical(f"⛔ {self.name}: Too many errors ({self._error_count}). Disabling Strategy.")
-                self.is_active = False
-
-    async def safe_on_candle(self, candle: Dict[str, Any]):
-        """Protected candle handler for backtest engine."""
-        try:
+        if len(self.candles) >= self.warmup:
             await self.on_candle(candle)
-            self._error_count = 0
-        except Exception as e:
-            self._error_count += 1
-            logger.error(f"🔥 {self.name} CANDLE ERROR: {e}", exc_info=True)
 
-            if self._error_count >= self._max_errors_before_stop:
-                logger.critical(f"⛔ {self.name}: Too many errors ({self._error_count}). Disabling Strategy.")
-                self.is_active = False
+    # ------------------------------------------------------------------ state helpers
+    @property
+    def position(self) -> int:
+        return self.ctx.position.qty
 
+    @property
+    def avg_price(self) -> float:
+        return self.ctx.position.avg_price
+
+    @property
+    def state(self) -> dict[str, Any]:
+        return self.ctx.state
+
+    @property
+    def stop(self) -> Optional[float]:
+        return self.ctx.state.get("stop")
+
+    @property
+    def target(self) -> Optional[float]:
+        return self.ctx.state.get("target")
+
+    def set_protection(self, stop: Optional[float] = None, target: Optional[float] = None) -> None:
+        self.ctx.state["stop"] = round(stop, 2) if stop else None
+        self.ctx.state["target"] = round(target, 2) if target else None
+
+    # ------------------------------------------------------------------ order helpers
     async def buy(
-        self, price: float, sl: float = 0.0, qty: int = None, confidence: float = 1.0, tag: str = "SIGNAL"
-    ) -> Optional[OrderResponse]:
-        """
-        Smart Buy Wrapper (Handles LONG ENTRY or SHORT EXIT).
-        """
-        # 1. Determine Intent & Quantity
-        is_entry = False
-        calculated_qty = 0
-
-        if self.position < 0:
-            # Case A: We are Short. Buying means COVERING (Exit).
-            # Default to full cover if qty not specified.
-            calculated_qty = qty if qty is not None else abs(self.position)
-            tag = tag or "COVER_SHORT"
-            is_entry = False
-        else:
-            # Case B: We are Flat/Long. Buying means ENTERING/ADDING (Entry).
-            if qty is not None:
-                calculated_qty = qty
-            else:
-                # Ask Risk Manager for Size (with strategy-specific leverage)
-                calculated_qty = await risk_manager.calculate_size(
-                    self.symbol, entry=price, sl=sl, confidence=confidence, leverage=self.leverage
-                )
-            is_entry = True
-
-        if calculated_qty <= 0:
-            return None
-
-        # 2. Risk Check (Only for Entries)
-        if is_entry:
-            # Calculate Risk Delta
-            new_exposure = abs(self.position + calculated_qty)
-            current_exposure = abs(self.position)
-
-            if new_exposure > current_exposure:
-                # We are increasing risk -> Strict Check
-                allowed = True
-                # allowed = await risk_manager.can_trade(self.symbol, calculated_qty, price)
-                if not allowed:
-                    logger.warning(f"⚠️ {self.name}: Risk Manager denied Long Entry.")
-                    return None
-
-        # 3. Execute
-        logger.info(f"🤖 {self.name} BUY ({'ENTRY' if is_entry else 'EXIT'}): {calculated_qty} @ {price}")
-        return await self._execute("BUY", calculated_qty, price, tag)
+        self,
+        price: float,
+        qty: Optional[int] = None,
+        *,
+        stop: Optional[float] = None,
+        target: Optional[float] = None,
+        confidence: float = 1.0,
+        reason: str = "BUY",
+        limit: bool = False,
+    ) -> bool:
+        """Covers a short if short; otherwise opens/adds to a long."""
+        return await self._trade(Side.BUY, price, qty, stop, target, confidence, reason, limit)
 
     async def sell(
-        self, price: float, sl: float = 0.0, qty: int = None, confidence: float = 1.0, tag: str = "SIGNAL"
-    ) -> Optional[OrderResponse]:
-        """
-        Smart Sell Wrapper (Handles LONG EXIT or SHORT ENTRY).
-        """
-        # 1. Determine Intent & Quantity
-        is_entry = False
-        calculated_qty = 0
+        self,
+        price: float,
+        qty: Optional[int] = None,
+        *,
+        stop: Optional[float] = None,
+        target: Optional[float] = None,
+        confidence: float = 1.0,
+        reason: str = "SELL",
+        limit: bool = False,
+    ) -> bool:
+        """Closes a long if long; otherwise opens/adds to a short."""
+        return await self._trade(Side.SELL, price, qty, stop, target, confidence, reason, limit)
 
-        if self.position > 0:
-            # Case A: We are Long. Selling means EXITING.
-            calculated_qty = qty if qty is not None else abs(self.position)
-            tag = tag or "EXIT_LONG"
-            is_entry = False
-        else:
-            # Case B: We are Flat/Short. Selling means ENTERING SHORT.
-            if qty is not None:
-                calculated_qty = qty
-            else:
-                calculated_qty = await risk_manager.calculate_size(
-                    self.symbol, entry=price, sl=sl, confidence=confidence, leverage=self.leverage
-                )
-            is_entry = True
+    async def exit(self, reason: str = "EXIT") -> bool:
+        pos = self.position
+        if pos == 0:
+            return False
+        side = Side.SELL if pos > 0 else Side.BUY
+        return await self.ctx.submit(side, abs(pos), reason=reason, is_exit=True)
 
-        if calculated_qty <= 0:
-            return None
+    async def _trade(self, side, price, qty, stop, target, confidence, reason, limit) -> bool:
+        pos = self.position
+        closing = pos != 0 and (pos > 0) != (side is Side.BUY)
+        if closing:
+            qty = min(qty or abs(pos), abs(pos))
+            return await self.ctx.submit(side, qty, reason=reason, is_exit=True)
 
-        # 2. Risk Check (Only for Entries)
-        if is_entry:
-            new_exposure = abs(self.position - calculated_qty)
-            current_exposure = abs(self.position)
+        if qty is None:
+            qty = self.ctx.size(price, stop, confidence)
+        if qty <= 0:
+            self.log.info("Signal %s ignored: computed quantity is 0", reason)
+            return False
 
-            if new_exposure > current_exposure:
-                allowed = True
-                # allowed = await risk_manager.can_trade(self.symbol, calculated_qty, price)
-                if not allowed:
-                    logger.warning(f"⚠️ {self.name}: Risk Manager denied Short Entry.")
-                    return None
-
-        # 3. Execute
-        logger.info(f"🤖 {self.name} SELL ({'ENTRY' if is_entry else 'EXIT'}): {calculated_qty} @ {price}")
-        return await self._execute("SELL", calculated_qty, price, tag)
-
-    async def _execute(self, side: str, qty: int, price: float, tag: str) -> Optional[OrderResponse]:
-        """Internal helper to send order and update state."""
-
-        # Debounce (1 sec)
-        if self.last_trade_time and (datetime.now() - self.last_trade_time).seconds < 1:
-            return None
-
-        response = await execution_engine.execute_order(
-            symbol=self.symbol, token=self.token, side=side, quantity=qty, price=price, tag=tag
+        ok = await self.ctx.submit(
+            side,
+            qty,
+            reason=reason,
+            order_type=OrderType.LIMIT if limit else OrderType.MARKET,
+            price=price if limit else 0.0,
         )
+        if ok and (stop or target):
+            self.set_protection(stop, target)
+        return ok
 
-        if response and response.status in [OrderStatus.COMPLETE, OrderStatus.PARTIAL]:
-            filled = response.filled_qty
-            fill_price = response.average_price if response.average_price else price
 
-            # Update position and average price
-            old_position = self.position
-            old_avg_price = self.avg_price
-
-            if side == "BUY":
-                new_position = old_position + filled
-
-                # Calculate new average price
-                if old_position >= 0:
-                    # Adding to long or opening long
-                    if new_position != 0:
-                        self.avg_price = ((old_position * old_avg_price) + (filled * fill_price)) / new_position
-                else:
-                    # Reducing short position
-                    if new_position >= 0:
-                        # Closed short and possibly opened long
-                        self.avg_price = fill_price if new_position > 0 else 0.0
-                    else:
-                        # Still short, avg price unchanged
-                        pass
-
-                self.position = new_position
-
-            else:  # SELL
-                new_position = old_position - filled
-
-                # Calculate new average price
-                if old_position <= 0:
-                    # Adding to short or opening short
-                    if new_position != 0:
-                        self.avg_price = ((abs(old_position) * old_avg_price) + (filled * fill_price)) / abs(new_position)
-                else:
-                    # Reducing long position
-                    if new_position <= 0:
-                        # Closed long and possibly opened short
-                        self.avg_price = fill_price if new_position < 0 else 0.0
-                    else:
-                        # Still long, avg price unchanged
-                        pass
-
-                self.position = new_position
-
-            self.last_trade_time = datetime.now()
-            logger.info(
-                f"✅ {self.name} Position Updated: {old_position} → {self.position} | "
-                f"Avg Price: {old_avg_price:.2f} → {self.avg_price:.2f}"
-            )
-
-        return response
-
-    async def close_position(self, tag: str = "FORCE_CLOSE"):
-        """Emergency Helper: Flattens any open position."""
-        if self.position == 0:
-            return
-
-        if self.position > 0:
-            await self._execute("SELL", self.position, 0.0, tag)
-        else:
-            await self._execute("BUY", abs(self.position), 0.0, tag)
+def protective_exit(
+    position: int,
+    stop: Optional[float],
+    target: Optional[float],
+    high: float,
+    low: float,
+    open_: Optional[float] = None,
+) -> Optional[tuple[str, float]]:
+    """
+    Decides whether a stop or target was hit within a price range [low, high].
+    Returns (reason, reference_price) or None. Stops win ties (conservative).
+    For backtests `open_` lets gaps through the stop fill at the open, not at the stop.
+    """
+    if position == 0:
+        return None
+    if position > 0:
+        if stop and low <= stop:
+            return "STOP_LOSS", min(stop, open_) if open_ is not None else stop
+        if target and high >= target:
+            return "TARGET", max(target, open_) if open_ is not None else target
+    else:
+        if stop and high >= stop:
+            return "STOP_LOSS", max(stop, open_) if open_ is not None else stop
+        if target and low <= target:
+            return "TARGET", min(target, open_) if open_ is not None else target
+    return None

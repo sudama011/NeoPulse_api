@@ -1,113 +1,63 @@
-# --- Variables ---
 VENV = .venv
-PYTHON = $(VENV)/bin/python3
-PIP = $(VENV)/bin/pip3
-UVICORN = $(VENV)/bin/uvicorn
-ALEMBIC = $(VENV)/bin/alembic
+PY = $(VENV)/bin/python
 BIN = $(VENV)/bin
 
-# Colors for terminal output
-BLUE = \033[1;34m
-GREEN = \033[1;32m
-YELLOW = \033[1;33m
-RED = \033[1;31m
-RESET = \033[0m
-
-# Default target
 .DEFAULT_GOAL := help
+.PHONY: help install run test test-unit lint format db-up db-down migrate migration sync backtest
 
-# Phony targets
-.PHONY: install run clean db-init db-migrate db-upgrade db-downgrade sync docker-up docker-down test lint help
-
-# --- Help Message ---
 help:
-	@echo "$(BLUE)NeoPulse Makefile commands:$(RESET)"
-	@echo "  $(GREEN)install$(RESET)         🛠️  Setup: Creates .venv and installs dependencies"
-	@echo "  $(GREEN)run$(RESET)             🚀  Run API: Starts the FastAPI server"
-	@echo "  $(GREEN)clean$(RESET)           🧹  Clean: Removes cache files"
-	@echo ""
-	@echo "$(YELLOW)Database & Alembic:$(RESET)"
-	@echo "  $(GREEN)db-init$(RESET)         🏗️  Init DB: Runs scripts/init_db.py"
-	@echo "  $(GREEN)db-migrate$(RESET)      📝  Migrate: Auto-generates a new migration (Usage: make db-migrate msg='desc')"
-	@echo "  $(GREEN)db-upgrade$(RESET)      🔄  Upgrade: Applies all migrations to HEAD"
-	@echo "  $(GREEN)db-downgrade$(RESET)    b🔙  Downgrade: Reverts the last migration"
-	@echo ""
-	@echo "$(YELLOW)Scripts & Ops:$(RESET)"
-	@echo "  $(GREEN)sync$(RESET)            📥  Sync: Runs the Morning Drill (Master Data Sync)"
-	@echo "  $(GREEN)docker-up$(RESET)       🐳  Docker Up: Starts containers (Postgres, Redis)"
-	@echo "  $(GREEN)docker-down$(RESET)     🛑  Docker Down: Stops and removes containers"
-	@echo "  $(GREEN)test$(RESET)            🧪  Test: Runs Pytest"
-
-# --- Core Commands ---
+	@echo "install      create .venv and install all dependencies"
+	@echo "db-up        start Postgres (docker compose)"
+	@echo "migrate      apply database migrations"
+	@echo "migration    create a migration: make migration msg='describe change'"
+	@echo "sync         download the Kotak instrument master"
+	@echo "run          start the API + trading engine"
+	@echo "test         run all tests (integration tests need TEST_DATABASE_URL or local test DB)"
+	@echo "lint         flake8 + mypy"
+	@echo "format       black + isort"
+	@echo "backtest     make backtest symbol=RELIANCE strategy=MACD_VOLUME interval=5 days=59"
 
 install:
 	python3 -m venv $(VENV)
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
-	@echo "$(GREEN)✅ Setup complete. Activate with: source .venv/bin/activate$(RESET)"
+	$(BIN)/pip install --upgrade pip
+	$(BIN)/pip install -r requirements-dev.txt
 
 run:
-	$(UVICORN) app.main:app --reload --host 0.0.0.0 --port 8000
-
-clean:
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	@echo "$(GREEN)🧹 Cache cleaned.$(RESET)"
-
-# --- Database & Alembic ---
-
-db-init:
-	@echo "$(BLUE)Initializing Database...$(RESET)"
-	$(PYTHON) scripts/init_db.py
-
-db-migrate:
-	@if [ -z "$(msg)" ]; then echo "$(RED)Error: Please provide a message. Usage: make db-migrate msg='your message'$(RESET)"; exit 1; fi
-	@echo "$(BLUE)Generating Migration...$(RESET)"
-	$(ALEMBIC) revision --autogenerate -m "$(msg)"
-
-db-upgrade:
-	@echo "$(BLUE)Applying Migrations...$(RESET)"
-	$(ALEMBIC) upgrade head
-
-db-downgrade:
-	@echo "$(YELLOW)Downgrading last revision...$(RESET)"
-	$(ALEMBIC) downgrade -1
-
-# --- Scripts & Operations ---
-
-sync:
-	@echo "$(BLUE)Running Morning Drill (Master Data Sync)...$(RESET)"
-	$(PYTHON) scripts/sync_master.py
-
-docker-up:
-	@echo "$(BLUE)Starting Docker Services...$(RESET)"
-	docker-compose up -d
-	@echo "$(GREEN)🐳 Services are up!$(RESET)"
-
-docker-down:
-	@echo "$(YELLOW)Stopping Docker Services...$(RESET)"
-	docker-compose down
+	$(BIN)/uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 test:
-	@echo "$(BLUE)Running Tests...$(RESET)"
-	$(PYTHON) -m pytest tests/ -v
+	$(PY) -m pytest tests
 
-# --- Code Quality ---
+test-unit:
+	$(PY) -m pytest tests/unit
 
-lint: ## Run all linting checks
-	@echo "$(BLUE)🔍 Running linting checks...$(RESET)"
-	# We ignore E501 (line too long) because strict 79 chars is annoying
-	$(BIN)/flake8 app backtest tests scripts --ignore=E501
-	$(BIN)/mypy app backtest tests scripts --ignore-missing-imports
-	@echo "$(GREEN)✅ Linting completed$(RESET)"
+lint:
+	$(BIN)/flake8 app backtest tests scripts
+	$(BIN)/mypy app --ignore-missing-imports
 
-lint-fix: ## Fix auto-fixable linting issues
-	@echo "$(BLUE)🔧 Fixing linting issues...$(RESET)"
-	$(BIN)/autopep8 --in-place --recursive --aggressive app backtest tests
-	@echo "$(GREEN)✅ Auto-fixable issues resolved$(RESET)"
-
-format: ## Format code with black and isort
-	@echo "$(BLUE)🎨 Formatting code...$(RESET)"
+format:
 	$(BIN)/black app backtest tests scripts
-	$(BIN)/isort app backtest tests
-	@echo "$(GREEN)✅ Code formatting completed$(RESET)"
+	$(BIN)/isort app backtest tests scripts
+
+db-up:
+	docker compose up -d db
+
+db-down:
+	docker compose down
+
+migrate:
+	$(BIN)/alembic upgrade head
+
+migration:
+	@test -n "$(msg)" || (echo "usage: make migration msg='describe change'" && exit 1)
+	$(BIN)/alembic revision --autogenerate -m "$(msg)"
+
+sync:
+	$(PY) -m scripts.sync_instruments
+
+symbol ?= RELIANCE
+strategy ?= MACD_VOLUME
+interval ?= 5
+days ?= 59
+backtest:
+	$(PY) -m backtest.engine --symbol $(symbol) --strategy $(strategy) --interval $(interval) --days $(days)

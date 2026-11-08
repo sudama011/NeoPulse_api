@@ -1,259 +1,242 @@
+"""
+Event-driven backtester that runs the SAME strategy classes as live trading.
+
+Execution model (no look-ahead):
+- Orders submitted while processing candle N fill at candle N+1:
+  market -> at its open (+/- slippage); limit -> if its range trades through the limit
+  (unfilled limits expire after `limit_ttl_candles`).
+- Stop/target are checked against each candle's range; a gap through the stop fills at
+  the open (pessimistic), and a stop wins over a target inside the same candle.
+- Statutory charges are applied to every fill; intraday positions are squared off at the
+  last candle of each session.
+
+Usage:
+    python -m backtest.engine --symbol RELIANCE --strategy MACD_VOLUME --days 59 --interval 5
+"""
+
+import argparse
 import asyncio
+import json
 import logging
 import os
-import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Optional
 
-# Ensure project root is in path for standalone execution
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+import pandas as pd
 
-from app.execution.engine import execution_engine
-from app.risk.manager import risk_manager as global_risk_manager
+from app.domain.models import Candle, Fill, OrderType, PositionState, ProductType, Side, Tick
+from app.portfolio.charges import ChargesCalculator
+from app.risk.sizer import position_size
 from app.strategy import get_strategy_class, list_strategies
-from app.strategy.base import BaseStrategy
-from backtest.analyst import PerformanceAnalyst
-from backtest.feed import HistoricalFeed
-from backtest.plotter import plot_backtest, plot_backtest_interactive
-from backtest.simulator import BacktestBroker
+from app.strategy.base import Strategy, protective_exit
+from backtest.analyst import BacktestReport, analyse, print_report
+from backtest.feed import load_candles
 
-logger = logging.getLogger("BacktestEngine")
+logger = logging.getLogger("Backtest")
 
 
-class BacktestEngine:
-    """
-    Backtest orchestrator.
-    - Uses the Strategy Registry to create any registered strategy.
-    - Monkey-patches the execution engine to route orders to BacktestBroker.
-    - Feeds historical candles via on_candle().
-    """
+@dataclass
+class _Pending:
+    side: Side
+    qty: int
+    order_type: OrderType
+    price: float
+    reason: str
+    placed_index: int
 
-    def __init__(
-        self,
-        symbol: str,
-        strategy_name: str,
-        days: int = 30,
-        interval: str = "5m",
-        initial_capital: float = 100_000.0,
-        strategy_params: dict = None,
-    ):
-        self.symbol = symbol
-        self.strategy_name = strategy_name.upper()
-        self.feed = HistoricalFeed(symbol, days, interval)
-        self.broker = BacktestBroker(initial_capital=initial_capital)
 
-        # Create strategy from registry
-        strategy_cls = get_strategy_class(self.strategy_name)
-        self.strategy: BaseStrategy = strategy_cls(
-            name=f"BT_{self.strategy_name}_{symbol}",
-            symbol=symbol,
-            token="0",
-            params=strategy_params or {},
+@dataclass
+class BacktestConfig:
+    symbol: str
+    strategy: str
+    params: dict[str, Any] = field(default_factory=dict)
+    capital: float = 100_000.0
+    risk_per_trade_pct: float = 0.01
+    leverage: float = 1.0
+    product: ProductType = ProductType.MIS
+    timeframe: int = 5
+    slippage_bps: float = 2.0
+    limit_ttl_candles: int = 3
+    lot_size: int = 1
+
+
+class BacktestContext:
+    """StrategyContext implementation backed by a simulated broker."""
+
+    def __init__(self, cfg: BacktestConfig):
+        self.cfg = cfg
+        self.instance_id = "backtest"
+        self.symbol = cfg.symbol
+        self.token = "0"
+        self.timeframe = cfg.timeframe
+        self.state: dict[str, Any] = {}
+        self.logger = logging.getLogger(f"strategy.backtest.{cfg.strategy}")
+        self._position = PositionState()
+        self._pending: Optional[_Pending] = None
+        self._now: datetime = datetime.min
+        self._index = 0
+        self._charges = ChargesCalculator()
+        self.fills: list[Fill] = []
+
+    # ------------------------------------------------------------------ StrategyContext
+    @property
+    def position(self) -> PositionState:
+        return self._position
+
+    @property
+    def has_pending_order(self) -> bool:
+        return self._pending is not None
+
+    @property
+    def is_warming_up(self) -> bool:
+        return False
+
+    def now(self) -> datetime:
+        return self._now
+
+    def size(self, entry: float, stop: Optional[float], confidence: float) -> int:
+        return position_size(
+            capital=self.cfg.capital,
+            entry=entry,
+            stop=stop,
+            risk_per_trade_pct=self.cfg.risk_per_trade_pct,
+            leverage=self.cfg.leverage,
+            confidence=confidence,
+            lot_size=self.cfg.lot_size,
         )
-        # Mark as backtest mode
-        self.strategy._backtest_mode = True
 
-    async def run(self) -> dict:
-        """Main Backtest Loop."""
-        logger.info(f"🚀 Starting Backtest: {self.strategy_name} on {self.symbol}")
+    async def submit(
+        self,
+        side: Side,
+        qty: int,
+        *,
+        reason: str,
+        order_type: OrderType = OrderType.MARKET,
+        price: float = 0.0,
+        is_exit: bool = False,
+    ) -> bool:
+        if self._pending is not None or qty <= 0:
+            return False
+        self._pending = _Pending(side, qty, order_type, price, reason, self._index)
+        return True
 
-        # 1. Load Data
-        self.feed.load_data()
-        if self.feed.data.empty:
-            return {"error": "No historical data loaded."}
+    # ------------------------------------------------------------------ simulation
+    def _fill(self, side: Side, qty: int, price: float, ts: datetime) -> Fill:
+        price = round(price, 2)
+        realized = self._position.apply(side, qty, price)
+        charges = self._charges.compute(side, qty, price, self.cfg.product)
+        fill = Fill("bt", self.instance_id, self.token, side, qty, price, ts, realized, charges)
+        self.fills.append(fill)
+        if self._position.qty == 0:
+            self.state.pop("stop", None)
+            self.state.pop("target", None)
+        return fill
 
-        # 2. Inject Simulator into Execution Layer and patch Risk Manager for backtest
-        original_broker = execution_engine.broker
-        execution_engine.broker = self.broker
+    def _execute_pending(self, candle: Candle) -> Optional[Fill]:
+        p = self._pending
+        if p is None:
+            return None
+        slip = self.cfg.slippage_bps / 10_000
+        if p.order_type is OrderType.MARKET:
+            price = candle.open * (1 + slip if p.side is Side.BUY else 1 - slip)
+        else:
+            crossed = candle.low <= p.price if p.side is Side.BUY else candle.high >= p.price
+            if not crossed:
+                if self._index - p.placed_index >= self.cfg.limit_ttl_candles:
+                    self._pending = None  # expired
+                return None
+            price = min(p.price, candle.open) if p.side is Side.BUY else max(p.price, candle.open)
+        self._pending = None
+        return self._fill(p.side, p.qty, price, candle.start)
 
-        # Patch Risk Manager to be permissive during backtest
-        orig_can_trade = global_risk_manager.can_trade
-        orig_calc_size = global_risk_manager.calculate_size
-        orig_initialized = getattr(global_risk_manager, "is_initialized", False)
-
-        async def _bt_can_trade(symbol: str, qty: int, price: float) -> bool:
-            # Always allow in backtest
-            return True
-
-        async def _bt_calculate_size(symbol: str, entry: float, sl: float, confidence: float = 1.0) -> int:
-            # Risk-based sizing with capital cap
-            #  - Risk 1% * confidence per trade
-            #  - Per-share risk = |entry - sl| (fallback to 0.5% of entry)
-            #  - Cap by available capital so cost <= balance
-            risk_pct = 0.01 * max(0.1, min(1.0, confidence))
-            capital = float(getattr(self.broker, "balance", self.broker.initial_capital))
-            risk_amt = max(1.0, capital * risk_pct)
-
-            price_risk = abs(entry - sl) if sl and sl > 0 else max(0.005 * entry, 0.5)
-            shares_by_risk = max(int(risk_amt / price_risk), 1)
-            shares_by_cap = max(int(capital // max(entry, 1e-6)), 1)
-
-            qty = min(shares_by_risk, shares_by_cap)
-            return max(qty, 1)
-
-        # Monkey patch
-        global_risk_manager.can_trade = _bt_can_trade  # type: ignore
-        global_risk_manager.calculate_size = _bt_calculate_size  # type: ignore
-        global_risk_manager.is_initialized = True  # type: ignore
-
-        try:
-            # 3. Stream candles to strategy
-            candle_count = 0
-            for candle in self.feed.stream():
-                # Update Broker's pricing view
-                self.broker.update_candle(candle)
-
-                # Feed candle to strategy via safe handler
-                await self.strategy.safe_on_candle(candle)
-                candle_count += 1
-
-                if not self.strategy.is_active:
-                    logger.warning(f"⚠️ Strategy deactivated after {candle_count} candles.")
-                    break
-
-            logger.info(f"✅ Processed {candle_count} candles.")
-
-            # 4. Final Mark-to-Market snapshot so equity reflects last close
-            try:
-                last_ts = self.feed.data.index[-1]
-                last_close = float(self.feed.data["close"].iloc[-1])
-                eq = float(getattr(self.broker, "balance", self.broker.initial_capital))
-                for sym, q in getattr(self.broker, "positions", {}).items():
-                    eq += float(q) * last_close
-                self.broker.orders.append(
-                    {
-                        "time": last_ts,
-                        "symbol": self.symbol,
-                        "side": "MARK",
-                        "qty": 0,
-                        "price": last_close,
-                        "value": 0.0,
-                        "balance_after": eq,
-                        "equity_after": eq,
-                        "position_after": getattr(self.broker, "positions", {}).get(self.symbol, 0),
-                    }
-                )
-            except Exception:
-                pass
-
-            # 5. Generate Report
-            analyst = PerformanceAnalyst(self.broker.initial_capital, self.broker.orders)
-            report = analyst.generate_report()
-            report["symbol"] = self.symbol
-            report["strategy"] = self.strategy_name
-            report["candles_processed"] = candle_count
-
-            # 6. Chart: Candlesticks + MACD + Buy/Sell markers
-            try:
-                out_dir = os.path.join(current_dir, "output")
-                fname = f"{self.strategy_name}_{self.symbol}_{self.feed.interval}_{self.feed.days}.png"
-                macd_params = {}
-                for k in ("fast", "slow", "signal"):
-                    if hasattr(self.strategy, k):
-                        macd_params[k] = getattr(self.strategy, k)
-                plot_path = plot_backtest(
-                    self.feed.data,
-                    self.broker.orders,
-                    title=f"{self.strategy_name} · {self.symbol} ({self.feed.interval})",
-                    outfile=os.path.join(out_dir, fname),
-                    macd_params=macd_params or None,
-                )
-                if plot_path:
-                    report["plot_path"] = plot_path
-            except Exception:
-                pass
-
-            return report
-
-        finally:
-            # 5. Always restore execution engine and risk manager
-            execution_engine.broker = original_broker
-            global_risk_manager.can_trade = orig_can_trade  # type: ignore
-            global_risk_manager.calculate_size = orig_calc_size  # type: ignore
-            global_risk_manager.is_initialized = orig_initialized  # type: ignore
+    def _check_protection(self, candle: Candle) -> Optional[Fill]:
+        hit = protective_exit(
+            self._position.qty, self.state.get("stop"), self.state.get("target"), candle.high, candle.low, candle.open
+        )
+        if hit is None:
+            return None
+        _, price = hit
+        side = Side.SELL if self._position.qty > 0 else Side.BUY
+        self._pending = None
+        return self._fill(side, abs(self._position.qty), price, candle.start)
 
 
-# --- CLI Helper ---
-async def run_backtest(
-    symbol: str = "RELIANCE",
-    strategy: str = "MACD_VOLUME",
-    days: int = 30,
-    interval: str = "5m",
-    capital: float = 100_000.0,
-    params: dict = None,
-    interactive: bool = False,
-):
-    """Convenience function to run a backtest and print results."""
-    print(f"\n📋 Available strategies: {list_strategies()}")
+async def run_backtest(cfg: BacktestConfig, candles: list[Candle]) -> BacktestReport:
+    if not candles:
+        raise ValueError("no candles to backtest")
+    strategy_cls = get_strategy_class(cfg.strategy)
+    ctx = BacktestContext(cfg)
+    strategy: Strategy = strategy_cls(ctx, cfg.params)
 
-    engine = BacktestEngine(
-        symbol=symbol,
-        strategy_name=strategy,
-        days=days,
-        interval=interval,
-        initial_capital=capital,
-        strategy_params=params,
+    equity: list[tuple[datetime, float]] = []
+    realized_net = 0.0
+    for i, candle in enumerate(candles):
+        ctx._index, ctx._now = i, candle.start
+        new_fills = [f for f in (ctx._execute_pending(candle), ctx._check_protection(candle)) if f]
+        for f in new_fills:
+            realized_net += f.realized_pnl - f.charges
+            await strategy.on_fill(f)
+
+        await strategy.process_candle(candle)
+        await strategy.on_tick(Tick(token="0", ltp=candle.close, ts=candle.start, volume=candle.volume))
+
+        session_ends = i == len(candles) - 1 or candles[i + 1].start.date() != candle.start.date()
+        if session_ends and cfg.product is ProductType.MIS:
+            ctx._pending = None  # intraday orders never carry over to the next session
+            if ctx.position.qty != 0:
+                side = Side.SELL if ctx.position.qty > 0 else Side.BUY
+                f = ctx._fill(side, abs(ctx.position.qty), candle.close, candle.start)
+                realized_net += f.realized_pnl - f.charges
+                await strategy.on_fill(f)
+
+        equity.append((candle.start, cfg.capital + realized_net + ctx.position.unrealized(candle.close)))
+
+    if ctx.position.qty != 0:  # CNC position still open: mark to market at last close
+        last = candles[-1]
+        side = Side.SELL if ctx.position.qty > 0 else Side.BUY
+        f = ctx._fill(side, abs(ctx.position.qty), last.close, last.start)
+        realized_net += f.realized_pnl - f.charges
+        equity[-1] = (last.start, cfg.capital + realized_net)
+
+    return analyse(cfg.capital, ctx.fills, pd.Series(dict(equity)))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="NeoPulse backtester")
+    parser.add_argument("--symbol", default="RELIANCE")
+    parser.add_argument("--strategy", default="MACD_VOLUME", help=f"one of {list(list_strategies())}")
+    parser.add_argument("--days", type=int, default=59)
+    parser.add_argument("--interval", type=int, default=5, help="candle minutes")
+    parser.add_argument("--capital", type=float, default=100_000)
+    parser.add_argument("--params", default="{}", help="strategy params as JSON")
+    parser.add_argument("--product", default="MIS", choices=["MIS", "CNC"])
+    parser.add_argument("--plot", action="store_true", help="write an interactive HTML chart")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    candles, frame = load_candles(args.symbol, args.days, args.interval)
+    cfg = BacktestConfig(
+        symbol=args.symbol,
+        strategy=args.strategy,
+        params=json.loads(args.params),
+        capital=args.capital,
+        timeframe=args.interval,
+        product=ProductType(args.product),
     )
-    report = await engine.run()
+    report = asyncio.run(run_backtest(cfg, candles))
+    print_report(report, title=f"{args.strategy} on {args.symbol} ({args.interval}m, {len(candles)} candles)")
 
-    if "error" in report:
-        print(f"\n❌ {report['error']}")
-        return report
+    if args.plot:
+        from backtest.plotter import plot_backtest_interactive
 
-    # Pretty print
-    analyst = PerformanceAnalyst(capital, [])
-    analyst.print_report(report)
-
-    if report.get("plot_path"):
-        print(f"\n🖼  Chart saved to: {report['plot_path']}")
-
-    # Optional interactive chart (HTML) if requested and Plotly is available
-    if interactive:
-        try:
-            out_dir = os.path.join(current_dir, "output")
-            html_name = f"{strategy}_{symbol}_{interval}_{days}.html"
-            macd_params = {}
-            for k in ("fast", "slow", "signal"):
-                if hasattr(engine.strategy, k):
-                    macd_params[k] = getattr(engine.strategy, k)
-            html_path = plot_backtest_interactive(
-                engine.feed.data,
-                engine.broker.orders,
-                title=f"{strategy} · {symbol} ({interval})",
-                outfile_html=os.path.join(out_dir, html_name),
-                macd_params=macd_params or None,
-            )
-            if html_path:
-                print(f"🧭 Interactive chart: {html_path}")
-        except Exception:
-            pass
-
-    return report
+        out = os.path.join(os.path.dirname(__file__), "output", f"{args.strategy}_{args.symbol}_{args.interval}m.html")
+        path = plot_backtest_interactive(
+            frame, report.fills_as_dicts(), title=f"{args.strategy} · {args.symbol}", outfile_html=out
+        )
+        if path:
+            print(f"Chart: {path}")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="NeoPulse Backtester")
-    parser.add_argument("--symbol", default="HDFCBANK", help="Stock symbol (e.g., RELIANCE)")
-    parser.add_argument("--strategy", default="MACD_VOLUME", help="Strategy name from registry")
-    parser.add_argument("--days", type=int, default=59, help="Number of days of history")
-    parser.add_argument("--interval", default="5m", help="Candle interval (1m, 5m, 15m, 1d)")
-    parser.add_argument("--capital", type=float, default=100_000, help="Initial capital")
-    parser.add_argument("--interactive", action="store_true", help="Generate interactive HTML chart (Plotly)")
-    args = parser.parse_args()
-
-    try:
-        asyncio.run(
-            run_backtest(
-                symbol=args.symbol,
-                strategy=args.strategy,
-                days=args.days,
-                interval=args.interval,
-                capital=args.capital,
-                interactive=args.interactive,
-            )
-        )
-    except KeyboardInterrupt:
-        print("\n🛑 Backtest stopped by user.")
+    main()

@@ -1,70 +1,45 @@
+"""Historical candles for backtests (Yahoo Finance; no broker login required)."""
+
 import logging
 from datetime import datetime, timedelta
 
 import pandas as pd
 import yfinance as yf
 
+from app.core.clock import IST
+from app.domain.models import Candle
+
 logger = logging.getLogger("BacktestFeed")
 
+_YF_INTERVALS = {1: "1m", 2: "2m", 5: "5m", 15: "15m", 30: "30m", 60: "60m"}
 
-class HistoricalFeed:
-    """
-    The 'Time Machine' for Data.
-    Fetches historical data and streams it candle-by-candle.
-    """
 
-    def __init__(self, symbol: str, days: int = 30, interval: str = "5m"):
-        self.symbol = symbol
-        self.days = days
-        self.interval = interval
-        self.data = pd.DataFrame()
+def load_candles(symbol: str, days: int, interval_min: int) -> tuple[list[Candle], pd.DataFrame]:
+    """Returns (candles, dataframe). Yahoo limits intraday history (~60 days, 7 for 1m)."""
+    if interval_min not in _YF_INTERVALS:
+        raise ValueError(f"interval must be one of {sorted(_YF_INTERVALS)}")
+    base = symbol.upper().removesuffix("-EQ")
+    ticker = base if base.endswith(".NS") else f"{base}.NS"
+    end = datetime.now()
+    df = yf.download(
+        ticker,
+        start=end - timedelta(days=days),
+        end=end,
+        interval=_YF_INTERVALS[interval_min],
+        auto_adjust=False,
+        progress=False,
+    )
+    if df.empty:
+        raise RuntimeError(f"no data from Yahoo for {ticker}")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna()
+    idx = pd.to_datetime(df.index)
+    df.index = idx.tz_localize("UTC").tz_convert(IST) if idx.tz is None else idx.tz_convert(IST)
 
-    def load_data(self):
-        """Fetches data from Yahoo Finance or CSV."""
-        logger.info(f"⏳ Fetching {self.days} days of {self.interval} data for {self.symbol}...")
-
-        # Adjust symbol for Yahoo (e.g., RELIANCE.NS)
-        ticker = f"{self.symbol}.NS" if not self.symbol.endswith(".NS") else self.symbol
-
-        try:
-            end = datetime.now()
-            start = end - timedelta(days=self.days)
-            df = yf.download(
-                ticker,
-                start=start,
-                end=end,
-                interval=self.interval,
-                auto_adjust=False,  # prevent adjusted prices changing OHLC semantics
-                progress=False,
-            )
-
-            if df.empty:
-                logger.error("❌ No data received from Yahoo Finance.")
-                return
-
-            # Flatten MultiIndex columns if present
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            # Rename to match our internal schema
-            df = df.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
-
-            # Ensure timestamps are standard
-            df.index = pd.to_datetime(df.index)
-            self.data = df
-            logger.info(f"✅ Loaded {len(df)} historical candles.")
-
-        except Exception as e:
-            logger.error(f"❌ Data Load Error: {e}")
-
-    def stream(self):
-        """Generator that yields one candle at a time."""
-        for timestamp, row in self.data.iterrows():
-            yield {
-                "start_time": timestamp,
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": row["close"],
-                "volume": row["volume"],
-            }
+    candles = [
+        Candle(ts.to_pydatetime(), float(r.open), float(r.high), float(r.low), float(r.close), int(r.volume))
+        for ts, r in df.iterrows()
+    ]
+    logger.info("Loaded %d candles for %s", len(candles), ticker)
+    return candles, df

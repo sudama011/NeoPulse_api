@@ -1,36 +1,38 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
-    container_name: neopulse_db_container
+    container_name: neopulse_db
     restart: always
-    # 1. Load env vars explicitly so Docker sees them
-    env_file:
-      - .env
+    env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT}:${POSTGRES_PORT}"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # 2. Performance Fix: Increase Shared Memory
-    # Docker defaults to 64MB, which is too low for Trading DBs causing crashes.
-    shm_size: 512mb 
+    shm_size: 512mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 5
-    # 3. Network Isolation (Best Practice)
-    networks:
-      - neopulse_net
+      retries: 10
+
+  app:
+    build: .
+    container_name: neopulse_app
+    # The process is crash-safe: on restart it reconciles orders/positions and resumes strategies.
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_SERVER: db
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
-
-networks:
-  neopulse_net:
-    driver: bridge
