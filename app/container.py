@@ -11,24 +11,29 @@ Startup is a recovery procedure, safe to run at any time of day:
 """
 
 import asyncio
+import html
 import logging
 from datetime import time, timedelta
+from typing import Optional
 
 from app.broker.base import Broker
 from app.broker.kotak import KotakBroker
 from app.broker.kotak_session import KotakSession
 from app.broker.paper import PaperBroker
-from app.core.clock import MARKET_CLOSE, now_ist, parse_hhmm
+from app.control.telegram_bot import TelegramBot
+from app.core.clock import MARKET_CLOSE, is_market_open, now_ist, parse_hhmm
 from app.core.executors import global_executor
 from app.core.settings import Settings
 from app.core.tasks import TaskSupervisor
 from app.db.session import create_engine, create_session_factory
+from app.domain.models import Fill, OrderStatus, Side
 from app.market.bus import TickBus
 from app.market.feed import MarketFeed
 from app.market.history import HistoryService
 from app.market.instruments import InstrumentStore
 from app.notifications.notifier import Notifier
-from app.oms.order_manager import OrderManager
+from app.notifications.telegram import TelegramClient
+from app.oms.order_manager import OrderManager, OrderView
 from app.oms.reconciler import PositionReconciler
 from app.portfolio.book import PositionBook
 from app.portfolio.charges import ChargesCalculator
@@ -44,7 +49,8 @@ class Container:
         self.settings = settings
         self.db_engine = create_engine(settings)
         self.sf = create_session_factory(self.db_engine)
-        self.notifier = Notifier(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID, settings.APP_NAME)
+        self.telegram = TelegramClient(settings.TELEGRAM_BOT_TOKEN) if settings.TELEGRAM_BOT_TOKEN else None
+        self.notifier = Notifier(self.telegram, settings.TELEGRAM_CHAT_ID, settings.APP_NAME)
 
         self.kotak = KotakSession(settings)
         self.bus = TickBus()
@@ -75,6 +81,13 @@ class Container:
             self.notifier,
         )
         self.risk.on_kill(self.engine.flatten_all)
+        self.oms.add_observer(self._on_order_event)
+        self.bot = (
+            TelegramBot(self.telegram, settings.TELEGRAM_CHAT_ID, self)
+            if self.telegram and settings.TELEGRAM_CHAT_ID and settings.TELEGRAM_COMMANDS
+            else None
+        )
+        self._alerted: set[str] = set()
         self.scheduler = Scheduler(settings.holidays)
         self.tasks = TaskSupervisor()
         self.started = False
@@ -98,6 +111,9 @@ class Container:
             await self._recover()
 
         self._schedule_jobs()
+        self.tasks.periodic("health-alerts", 30.0, self._health_alerts)
+        if self.bot:
+            self.tasks.periodic("telegram-bot", 5.0, self.bot.run)
         self.started = True
         self.notifier.send(f"NeoPulse started ({self.mode})", level="SUCCESS")
 
@@ -108,7 +124,8 @@ class Container:
         await self.oms.close()
         await self.feed.stop()
         await self.broker.stop()
-        await self.notifier.close()
+        if self.telegram:
+            await self.telegram.close()
         await self.db_engine.dispose()
         global_executor.stop()
 
@@ -159,6 +176,42 @@ class Container:
         self.scheduler.daily("instrument-sync", time(8, 35), MARKET_CLOSE, self._sync_instruments_if_stale)
         self.scheduler.daily("square-off", square_off, MARKET_CLOSE, self.engine.square_off_intraday)
         self.scheduler.daily("eod-report", time(15, 35), time(23, 59), self._eod_report)
+
+    # ------------------------------------------------------------------ alerts
+    async def _on_order_event(self, order: OrderView, fill: Optional[Fill]) -> None:
+        tag = f"[{order.reason}]" if order.reason else ""
+        if fill is not None:
+            pos = self.positions.get(order.instance_id)
+            pnl = f" · realized {fill.realized_pnl:+,.2f}" if fill.realized_pnl else ""
+            self.notifier.send_html(
+                f"{'🟢' if fill.side is Side.BUY else '🔴'} <b>{fill.side.value} {fill.qty} {html.escape(order.symbol)}"
+                f" @ {fill.price:.2f}</b> {html.escape(tag)}\nPosition {pos.qty:+d}{pnl}"
+            )
+        elif order.status in (OrderStatus.REJECTED, OrderStatus.FAILED):
+            self.notifier.send(
+                f"Order {order.status.value}: {order.side.value} {order.qty} {order.symbol} {tag}\n{order.message}",
+                level="ERROR",
+            )
+
+    async def _health_alerts(self) -> None:
+        """One alert per incident (re-armed when the condition clears)."""
+        if not is_market_open(now_ist(), self.settings.holidays) or not self.started:
+            self._alerted.clear()
+            return
+        checks = {
+            "feed": (
+                bool(self.engine.runners) and self.feed.seconds_since_data > 120,
+                "Market data feed silent for over 2 minutes",
+            ),
+            "session": (not self.kotak.is_logged_in, "Kotak session is not logged in"),
+        }
+        for key, (bad, message) in checks.items():
+            if bad and key not in self._alerted:
+                self._alerted.add(key)
+                self.notifier.send(message, level="ERROR")
+            elif not bad and key in self._alerted:
+                self._alerted.discard(key)
+                self.notifier.send(f"Recovered: {message.lower()}", level="SUCCESS")
 
     # ------------------------------------------------------------------ jobs
     async def _refresh_session(self) -> None:

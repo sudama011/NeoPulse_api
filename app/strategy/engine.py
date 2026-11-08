@@ -16,14 +16,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.clock import now_ist
-from app.domain.models import ProductType, Side
+from app.domain.models import OrderStatus, ProductType, Side
 from app.market.bus import TickBus
 from app.market.feed import MarketFeed
 from app.market.history import HistoryService, supported_timeframe
 from app.market.instruments import InstrumentStore
 from app.models import StrategyInstance
 from app.notifications.notifier import Notifier
-from app.oms.order_manager import OrderManager
+from app.oms.order_manager import OrderManager, OrderView
 from app.portfolio.book import PositionBook
 from app.risk.manager import RiskManager
 from app.strategy import get_strategy_class
@@ -33,6 +33,7 @@ from app.strategy.runner import InstanceConfig, RunnerDeps, StrategyRunner
 logger = logging.getLogger("StrategyEngine")
 
 ACTIVE, STOPPED, DISABLED = "ACTIVE", "STOPPED", "DISABLED"
+MANUAL = "MANUAL"
 
 
 class EngineError(ValueError):
@@ -166,6 +167,9 @@ class StrategyEngine:
                     .scalars()
                     .first()
                 )
+            if clash and self._is_idle_manual(clash) and req.strategy_type.upper() != MANUAL:
+                await self.stop(clash.id, flatten=False, reason="replaced by automated strategy")
+                clash = None
             if clash:
                 raise EngineError(f"{instrument.trading_symbol} already has an active strategy ({clash.name})")
 
@@ -251,6 +255,77 @@ class StrategyEngine:
         logger.critical("⛔ Disabling %s: %s", instance_id, reason)
         flat = await self.stop(instance_id, flatten=True, status=DISABLED, reason=reason)
         self._notifier.send(f"Strategy {instance_id} DISABLED: {reason}. Flat={flat}", level="CRITICAL")
+
+    # ------------------------------------------------------------------ manual trading
+    def runner_for_symbol(self, symbol: str) -> Optional[StrategyRunner]:
+        info = self._instruments.get(symbol)
+        if info is None:
+            return None
+        return next((r for r in self.runners.values() if r.token == info.token), None)
+
+    async def manual_order(
+        self,
+        symbol: str,
+        side: Side,
+        qty: int,
+        *,
+        limit_price: Optional[float] = None,
+        stop: Optional[float] = None,
+        target: Optional[float] = None,
+        product: ProductType = ProductType.MIS,
+    ) -> tuple[OrderView, StrategyRunner]:
+        """
+        Operator order. Routed through a MANUAL instance for the symbol (created on demand) so it
+        gets the same persistence, protection, square-off and recovery as strategy orders.
+        Refused when an automated strategy owns the symbol, except for orders that reduce its position.
+        """
+        info = self._instruments.get(symbol)
+        if info is None:
+            raise EngineError(f"Unknown symbol '{symbol}'")
+        runner = self.runner_for_symbol(symbol)
+        if runner is None:
+            row = await self.create(
+                NewInstance(
+                    strategy_type=MANUAL,
+                    symbol=symbol,
+                    capital=1.0,
+                    params={},
+                    product=product,
+                    name=f"MANUAL-{info.trading_symbol}",
+                )
+            )
+            runner = self.runners.get(row.id)
+            if runner is None:
+                raise EngineError(f"could not start manual instance: {self._failed.get(row.id, 'unknown error')}")
+        elif runner.cfg.strategy_type != MANUAL:
+            pos = runner.position.qty
+            reduces = pos != 0 and (pos > 0) != (side is Side.BUY) and qty <= abs(pos)
+            if not reduces:
+                raise EngineError(
+                    f"{info.trading_symbol} is traded by {runner.cfg.name}; stop it first (manual exits are allowed)"
+                )
+
+        result = await runner.manual_order(side, qty, limit_price=limit_price, stop=stop, target=target)
+        if isinstance(result, str):
+            raise EngineError(result)
+        if result.status in (OrderStatus.REJECTED, OrderStatus.FAILED):
+            raise EngineError(f"order {result.status.value.lower()}: {result.message}")
+        return result, runner
+
+    async def exit_symbol(self, symbol: str) -> bool:
+        runner = self.runner_for_symbol(symbol)
+        if runner is None:
+            raise EngineError(f"no running instance trades '{symbol}'")
+        return await runner.flatten("MANUAL_EXIT")
+
+    @staticmethod
+    def _is_idle_manual_row(row: StrategyInstance) -> bool:
+        return row.strategy_type == MANUAL and (row.position_qty or 0) == 0
+
+    def _is_idle_manual(self, row: StrategyInstance) -> bool:
+        return (
+            self._is_idle_manual_row(row) and self.positions.get(row.id).qty == 0 and not self.oms.open_orders(row.id)
+        )
 
     # ------------------------------------------------------------------ account actions
     async def flatten_all(self, reason: str) -> None:

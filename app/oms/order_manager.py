@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Optional, Protocol
+from typing import Awaitable, Callable, Optional, Protocol
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -117,12 +117,17 @@ class OrderManager:
         self._listeners: dict[str, OrderListener] = {}
         self._events: asyncio.Queue[tuple[OrderView, Optional[Fill]]] = asyncio.Queue()
         self._dispatcher: Optional[asyncio.Task] = None
+        self._observers: list[Callable[[OrderView, Optional[Fill]], Awaitable[None]]] = []
         self._cancel_requested: set[str] = set()
         broker.set_order_handler(self.on_broker_update)
 
     # ------------------------------------------------------------------ queries
     def add_listener(self, instance_id: str, listener: OrderListener) -> None:
         self._listeners[instance_id] = listener
+
+    def add_observer(self, callback: Callable[[OrderView, Optional[Fill]], Awaitable[None]]) -> None:
+        """Account-wide observer (alerts, audit): sees every order update and fill."""
+        self._observers.append(callback)
 
     def remove_listener(self, instance_id: str) -> None:
         self._listeners.pop(instance_id, None)
@@ -435,7 +440,7 @@ class OrderManager:
         re-enters the caller, so a strategy that is mid-`submit` (holding its own lock)
         cannot deadlock when the broker reports a fill synchronously.
         """
-        if view.instance_id not in self._listeners:
+        if view.instance_id not in self._listeners and not self._observers:
             return
         if self._dispatcher is None or self._dispatcher.done():
             self._dispatcher = asyncio.create_task(self._dispatch(), name="oms-dispatcher")
@@ -449,6 +454,8 @@ class OrderManager:
                 if fill is not None:
                     await _safe(listener.on_fill(fill))
                 await _safe(listener.on_order_update(view))
+            for observer in self._observers:
+                await _safe(observer(view, fill))
             self._events.task_done()
 
     async def drain(self) -> None:

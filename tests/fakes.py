@@ -75,5 +75,41 @@ class RecordingNotifier(Notifier):
     def send(self, message: str, level: str = "INFO") -> None:
         self.messages.append((level, message))
 
+    def send_html(self, text: str) -> None:
+        self.messages.append(("HTML", text))
 
-__all__ = ["FakeBroker", "RecordingNotifier", "OrderRejected", "BrokerUnavailable"]
+
+class FakeTelegram:
+    """Stands in for TelegramClient: records outgoing messages, serves scripted updates."""
+
+    def __init__(self, backlog: Optional[list[dict]] = None):
+        self.sent: list[tuple[int, str, Optional[dict]]] = []
+        self.edits: dict[int, str] = {}
+        self.backlog = backlog or []
+        self._ids = itertools.count(1)
+
+    async def send_message(self, chat_id, text, reply_markup=None) -> int:
+        mid = next(self._ids)
+        self.sent.append((mid, text, reply_markup))
+        return mid
+
+    async def edit_message(self, chat_id, message_id, text) -> None:
+        self.edits[message_id] = text
+
+    async def answer_callback(self, callback_id, text=None) -> None:
+        pass
+
+    async def get_updates(self, offset, timeout=0):
+        return self.backlog if offset is None else []
+
+    async def set_commands(self, commands) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    def last(self) -> str:
+        return self.sent[-1][1]
+
+
+__all__ = ["FakeBroker", "FakeTelegram", "RecordingNotifier", "OrderRejected", "BrokerUnavailable"]

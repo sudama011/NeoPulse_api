@@ -125,17 +125,31 @@ class StrategyRunner:
         price: float = 0.0,
         is_exit: bool = False,
     ) -> bool:
+        result = await self._submit(side, qty, reason=reason, order_type=order_type, price=price, is_exit=is_exit)
+        return isinstance(result, OrderView) and result.status not in (OrderStatus.REJECTED, OrderStatus.FAILED)
+
+    async def _submit(
+        self,
+        side: Side,
+        qty: int,
+        *,
+        reason: str,
+        order_type: OrderType = OrderType.MARKET,
+        price: float = 0.0,
+        is_exit: bool = False,
+    ) -> OrderView | str:
+        """Returns the submitted order, or a human-readable reason it was not sent."""
         if self._warming or not self._accepting:
-            return False
+            return "strategy is not accepting orders"
         if self.has_pending_order:
             self.logger.info("Signal %s skipped: an order is already working", reason)
-            return False
+            return "an order is already working for this symbol"
         if time.monotonic() < self._cooldown_until:
             self.logger.warning("Signal %s skipped: cooling down after %d rejection(s)", reason, self._rejects)
-            return False
+            return f"cooling down after {self._rejects} rejection(s)"
         qty = self.instrument.round_qty(qty)
         if qty <= 0:
-            return False
+            return f"quantity must be a positive multiple of lot size {self.instrument.lot_size}"
 
         pos = self.position.qty
         reduces = pos != 0 and (pos > 0) != (side is Side.BUY) and qty <= abs(pos)
@@ -144,7 +158,7 @@ class StrategyRunner:
             rejection = await self._deps.risk.check_entry(self.instance_id, qty, ref_price, self.cfg.leverage)
             if rejection:
                 self.logger.warning("Entry %s blocked by risk: %s", reason, rejection)
-                return False
+                return f"blocked by risk: {rejection}"
 
         if order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT):
             price = self.instrument.round_price(price)
@@ -160,7 +174,38 @@ class StrategyRunner:
             segment=self.cfg.segment,
             reason=reason,
         )
-        return view.status not in (OrderStatus.REJECTED, OrderStatus.FAILED)
+        return view
+
+    # ------------------------------------------------------------------ manual control
+    async def manual_order(
+        self,
+        side: Side,
+        qty: int,
+        *,
+        limit_price: Optional[float] = None,
+        stop: Optional[float] = None,
+        target: Optional[float] = None,
+    ) -> OrderView | str:
+        """An order placed by the operator (Telegram/API). Same guards as strategy orders."""
+        async with self._lock:
+            order_type = OrderType.LIMIT if limit_price else OrderType.MARKET
+            result = await self._submit(side, qty, reason="MANUAL", order_type=order_type, price=limit_price or 0.0)
+            if isinstance(result, OrderView) and result.status not in (OrderStatus.REJECTED, OrderStatus.FAILED):
+                if stop or target:
+                    self.state["stop"] = round(stop, 2) if stop else None
+                    self.state["target"] = round(target, 2) if target else None
+                    await self._persist_state()
+            return result
+
+    async def update_protection(self, updates: dict[str, Optional[float]]) -> dict[str, Optional[float]]:
+        """Sets/clears stop and/or target (keys 'stop', 'target'). Returns the resulting levels."""
+        async with self._lock:
+            for key in ("stop", "target"):
+                if key in updates:
+                    value = updates[key]
+                    self.state[key] = round(value, 2) if value else None
+            await self._persist_state()
+            return {"stop": self.state.get("stop"), "target": self.state.get("target")}
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:

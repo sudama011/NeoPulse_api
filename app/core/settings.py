@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # --- Telegram (optional) ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_CHAT_ID: Optional[str] = None
+    TELEGRAM_COMMANDS: bool = True  # accept commands (incl. orders) from TELEGRAM_CHAT_ID
 
     # --- Risk (account level) ---
     MAX_DAILY_LOSS: float = 2000.0  # net of charges; trips the kill switch
