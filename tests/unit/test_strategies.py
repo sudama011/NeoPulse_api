@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app.core.clock import IST
 from app.domain.models import Candle, ProductType, Side
@@ -57,3 +57,26 @@ async def test_history_range_fetches_in_backend_windows():
     assert calls[0] == ("2026-01-01", "2026-01-30") and calls[-1][1] == "2026-03-15"
     assert all((date.fromisoformat(b) - date.fromisoformat(a)).days < 30 for a, b in calls)
     assert len(out) == len(calls) and out == sorted(out, key=lambda c: c.start)
+
+
+async def test_history_retries_rate_limits_then_raises():
+    import pytest
+
+    from app.market.history import HistoryUnavailable
+
+    limited = {"code": 429, "error": "Rate limit exceeded"}
+    ok = {"status": "success", "data": {"candles": [["2026-01-02T09:15:00+0530", 1, 2, 0.5, 1.5, 10]]}}
+    session = SimpleNamespace(client=SimpleNamespace(historical_data=None), call=AsyncMock(side_effect=[limited, ok]))
+    svc = HistoryService(session, calls_per_second=1000)
+    with patch("app.market.history.asyncio.sleep", AsyncMock()):
+        assert len(await svc.candles("1", 15, 10, retries=2)) == 1
+
+        session.call = AsyncMock(return_value=limited)
+        with pytest.raises(HistoryUnavailable):
+            await svc.candles("1", 15, 10, retries=2)
+        assert session.call.await_count == 3
+
+        session.call = AsyncMock(return_value={"stat": "Not_Ok", "errMsg": "bad symbol"})
+        with pytest.raises(HistoryUnavailable):
+            await svc.candles("1", 15, 10, retries=5)
+        assert session.call.await_count == 1  # non-rate-limit errors are not retried

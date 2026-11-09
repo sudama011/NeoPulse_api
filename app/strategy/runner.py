@@ -20,10 +20,10 @@ from typing import Any, Awaitable, Callable, Optional
 
 from app.core.clock import now_ist
 from app.core.tasks import fire_and_forget
-from app.domain.models import Fill, OrderStatus, OrderType, PositionState, ProductType, Side, Tick
+from app.domain.models import Candle, Fill, OrderStatus, OrderType, PositionState, ProductType, Side, Tick
 from app.market.bus import TickBus
 from app.market.candles import CandleBuilder
-from app.market.history import HistoryService
+from app.market.history import HistoryService, HistoryUnavailable
 from app.market.instruments import InstrumentInfo
 from app.oms.order_manager import OrderManager, OrderView
 from app.portfolio.book import PositionBook
@@ -75,7 +75,11 @@ class StrategyRunner:
         self.logger = logging.getLogger(f"strategy.{cfg.name}")
         self._deps = deps
         self._builder = CandleBuilder(cfg.timeframe)
-        self._warming = False
+        self._warmed = False  # history replayed; until then closed candles are held back
+        self._replaying = False  # replaying history/held candles: strategy orders are suppressed
+        self._held: list[Candle] = []
+        self._started_at: Optional[datetime] = None
+        self._warm_task: Optional[asyncio.Task] = None
         self._accepting = False
         self._errors = 0
         self._rejects = 0
@@ -99,7 +103,7 @@ class StrategyRunner:
 
     @property
     def is_warming_up(self) -> bool:
-        return self._warming
+        return self._replaying or not self._warmed
 
     def now(self) -> datetime:
         return now_ist()
@@ -140,8 +144,10 @@ class StrategyRunner:
         manual: bool = False,
     ) -> OrderView | str:
         """Returns the submitted order, or a human-readable reason it was not sent."""
-        if self._warming or not self._accepting:
+        if not self._accepting:
             return "strategy is not accepting orders"
+        if self._replaying or (not self._warmed and not is_exit):
+            return "strategy is still warming up (waiting for history)"
         if self.has_pending_order:
             self.logger.info("Signal %s skipped: an order is already working", reason)
             return "an order is already working for this symbol"
@@ -214,46 +220,91 @@ class StrategyRunner:
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
-        await self._warm_up()
+        self._started_at = now_ist()
         self._deps.oms.add_listener(self.instance_id, self)
         self._accepting = True
+        if not await self._try_warm_up(retries=1):
+            # Don't block startup (or miss ticks) on a slow/rate-limited history API: run live now, hold back
+            # closed candles, and replay history + held candles in order once history arrives.
+            self._warm_task = asyncio.create_task(self._warm_up_until_ready(), name=f"warmup-{self.cfg.name}")
         self._task = asyncio.create_task(self._consume(), name=f"runner-{self.cfg.name}")
         self.logger.info(
-            "▶️ Running (%s %s, %dm, pos=%d)", self.cfg.strategy_type, self.symbol, self.timeframe, self.position.qty
+            "▶️ Running (%s %s, %dm, pos=%d%s)",
+            self.cfg.strategy_type,
+            self.symbol,
+            self.timeframe,
+            self.position.qty,
+            "" if self._warmed else ", warming up in background",
         )
 
     async def stop(self) -> None:
         self._accepting = False
         self._deps.oms.remove_listener(self.instance_id)
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        for task in (self._warm_task, self._task):
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await self._persist_state()
 
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def _warm_up(self) -> None:
-        need = max(self.strategy.warmup, self.strategy.history_bars) + 5
-        if need <= 5:
-            return
-        candles = await self._deps.history.candles(self.token, self.timeframe, need, self.cfg.segment)
+    @property
+    def warmed_up(self) -> bool:
+        return self._warmed
+
+    def _history_needed(self) -> int:
+        bars = max(self.strategy.warmup, self.strategy.history_bars)
+        return bars + 5 if bars > 0 else 0
+
+    async def _try_warm_up(self, retries: int) -> bool:
+        need = self._history_needed()
+        if need == 0:
+            self._warmed = True
+            return True
+        try:
+            candles = await self._deps.history.candles(self.token, self.timeframe, need, self.cfg.segment, retries)
+        except HistoryUnavailable as e:
+            self.logger.warning("Warm-up history unavailable (%s); will retry", e)
+            return False
+        async with self._lock:
+            await self._replay(candles)
         if len(candles) < self.strategy.warmup:
             self.logger.warning(
-                "Only %d/%d warm-up candles available; strategy will finish warming live",
-                len(candles),
-                self.strategy.warmup,
+                "Only %d/%d warm-up candles exist; finishing warm-up live", len(candles), self.strategy.warmup
             )
-        self._warming = True
+        return True
+
+    async def _warm_up_until_ready(self) -> None:
+        delay, attempts = 10.0, 0
+        while True:
+            await asyncio.sleep(delay)
+            attempts += 1
+            if await self._try_warm_up(retries=3):
+                self.logger.info("✅ Warm-up complete after %d retr%s", attempts, "y" if attempts == 1 else "ies")
+                return
+            if attempts == 3:
+                self._deps.alert(f"{self.cfg.name}: history still unavailable; strategy is not trading yet")
+            delay = min(delay * 2, 300.0)
+
+    async def _replay(self, history: list[Candle]) -> None:
+        """Feeds history, then held live candles newer than it, with strategy orders suppressed. Holds the lock."""
+        self._replaying = True
         try:
-            for candle in candles:
+            last = history[-1].start if history else None
+            for candle in history:
                 await self._guard(self.strategy.process_candle(candle), "warmup")
+            for candle in self._held:
+                if last is None or candle.start > last:
+                    await self._guard(self.strategy.process_candle(candle), "warmup")
+            self._held.clear()
+            if history:
+                self._builder.seed(history[-1])
         finally:
-            self._warming = False
-        if candles:
-            self._builder.seed(candles[-1])
+            self._replaying = False
+        self._warmed = True
 
     async def _consume(self) -> None:
         sub = self._deps.bus.subscribe(self.token)
@@ -269,17 +320,37 @@ class StrategyRunner:
             self.last_tick = tick
             candle = self._builder.update(tick)
             if candle is not None:
-                await self._guard(self.strategy.process_candle(candle), "on_candle")
-            await self._enforce_protection(tick.ltp)
-            await self._guard(self.strategy.on_tick(tick), "on_tick")
+                await self._deliver(candle)
+            await self._enforce_protection(tick.ltp)  # stops/targets are enforced even while warming up
+            if self._warmed:
+                await self._guard(self.strategy.on_tick(tick), "on_tick")
             await self._persist_state()
 
     async def on_timer(self, now: datetime) -> None:
         async with self._lock:
             candle = self._builder.flush(now)
             if candle is not None:
-                await self._guard(self.strategy.process_candle(candle), "on_candle")
+                await self._deliver(candle)
                 await self._persist_state()
+
+    async def _deliver(self, candle: Candle) -> None:
+        if not self._warmed:
+            self._held.append(candle)
+            return
+        if self._started_at is not None and candle.start < self._started_at:
+            candle = await self._authoritative(candle)
+        await self._guard(self.strategy.process_candle(candle), "on_candle")
+
+    async def _authoritative(self, partial: Candle) -> Candle:
+        """
+        The first live candle after a (re)start was built from ticks seen since start only. Replace it
+        with the exchange's complete candle when history has it (matters for e.g. opening ranges).
+        """
+        try:
+            recent = await self._deps.history.candles(self.token, self.timeframe, 3, self.cfg.segment, retries=1)
+        except HistoryUnavailable:
+            return partial
+        return next((c for c in recent if c.start == partial.start), partial)
 
     async def on_fill(self, fill: Fill) -> None:
         async with self._lock:
@@ -358,7 +429,7 @@ class StrategyRunner:
         except Exception:
             self._errors += 1
             self.logger.exception("Strategy error in %s (%d/%d)", where, self._errors, MAX_CONSECUTIVE_ERRORS)
-            if self._errors >= MAX_CONSECUTIVE_ERRORS and not self._warming:
+            if self._errors >= MAX_CONSECUTIVE_ERRORS and not self._replaying:
                 self._accepting = False
                 # Run outside this task: disabling stops (cancels) the runner's own task.
                 fire_and_forget(

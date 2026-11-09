@@ -63,8 +63,18 @@ class FakeFeed:
 
 
 class FakeHistory:
-    async def candles(self, token, timeframe, count, segment="nse_cm"):
-        return []
+    def __init__(self, candles=None, fail_times: int = 0):
+        self.data = candles or []
+        self.fail_times = fail_times
+        self.calls = 0
+
+    async def candles(self, token, timeframe, count, segment="nse_cm", retries=0):
+        from app.market.history import HistoryUnavailable
+
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise HistoryUnavailable("Rate limit exceeded")
+        return [c for c in self.data][-count:]
 
 
 @dataclass
@@ -430,3 +440,71 @@ async def test_square_off_includes_orphaned_positions(sf):
 def test_settings_reject_entry_cutoff_after_square_off():
     with pytest.raises(ValueError, match="ENTRY_CUTOFF"):
         Settings(ENTRY_CUTOFF="15:20", SQUARE_OFF_TIME="15:15")
+
+
+# ---------------------------------------------------------------------- warm-up resilience
+@register_strategy("TEST_RECORDER")
+class RecorderStrategy(Strategy):
+    """Records candles it sees; tries to buy on every candle (must be suppressed during replay)."""
+
+    warmup = 3
+
+    async def on_candle(self, candle: Candle) -> None:
+        self.state.setdefault("seen", []).append(candle.start.isoformat())
+        if self.position == 0 and not self.ctx.has_pending_order:
+            await self.buy(candle.close, qty=1, reason="REC")
+
+
+def _bar(minute: int, price: float = 100.0) -> Candle:
+    return Candle(MARKET_TIME.replace(hour=9, minute=15) + timedelta(minutes=minute), price, price, price, price, 10)
+
+
+async def test_runner_runs_live_while_history_is_rate_limited_then_replays_in_order(sf):
+    s = await build(sf)
+    history = FakeHistory([_bar(-15 * i) for i in range(6, 0, -1)], fail_times=1)
+    s.engine._deps.history = history
+    row = await s.engine.create(
+        NewInstance(strategy_type="TEST_RECORDER", symbol="RELIANCE", capital=100_000, params={}, timeframe=15)
+    )
+    runner = s.engine.runners[row.id]
+    assert runner.running and not runner.warmed_up
+
+    # A protective exit still works while warming up; a new entry does not.
+    await s.positions.adopt(row.id, 5, 100.0)
+    runner.state["stop"] = 95.0
+    s.broker.auto_fill_price = 94.0
+    await runner.on_tick(tick(94.0))
+    assert [r.side for r in s.broker.requests] == [Side.SELL]
+    await s.oms.sync_with_broker()
+    assert await runner.submit(Side.BUY, 1, reason="early") is False
+
+    # A live candle closes while warming: it is held back, not given to the strategy.
+    await runner.on_timer(MARKET_TIME.replace(hour=10, minute=16))
+    assert len(runner._held) == 1 and "seen" not in runner.state
+
+    assert await runner._try_warm_up(retries=0)
+    seen = runner.state["seen"]
+    # 6 history bars (strategy sees them from bar #3 = warmup) + the held live bar, in time order
+    assert seen == sorted(seen) and len(seen) == 6 - 2 + 1
+    assert seen[-1] == MARKET_TIME.replace(hour=10, minute=0).isoformat() and runner._held == []
+    assert len(s.broker.requests) == 1  # replay never sends orders
+    await s.engine.shutdown()
+
+
+async def test_first_partial_candle_after_restart_is_replaced_by_exchange_candle(sf):
+    s = await build(sf)
+    full = Candle(MARKET_TIME.replace(hour=9, minute=15), 100.0, 105.0, 99.0, 104.0, 5000)
+    history = FakeHistory([_bar(-15 * i) for i in range(6, 0, -1)])
+    s.engine._deps.history = history
+    with patch("app.strategy.runner.now_ist", return_value=MARKET_TIME.replace(hour=9, minute=22)):
+        row = await s.engine.create(
+            NewInstance(strategy_type="TEST_RECORDER", symbol="RELIANCE", capital=100_000, params={}, timeframe=15)
+        )
+    runner = s.engine.runners[row.id]
+    history.data.append(full)
+    # ticks only from 09:22 onwards -> partial 09:15 candle
+    await runner.on_tick(Tick("2885", 102.0, MARKET_TIME.replace(hour=9, minute=22), 100))
+    await runner.on_tick(Tick("2885", 103.0, MARKET_TIME.replace(hour=9, minute=31), 200))
+    last = runner.strategy.candles[-1]
+    assert (last.start, last.high, last.low, last.volume) == (full.start, 105.0, 99.0, 5000)
+    await s.engine.shutdown()

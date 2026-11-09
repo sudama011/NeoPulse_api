@@ -24,8 +24,9 @@ class CandleBuilder:
         self.last_closed_start: Optional[datetime] = None
 
     def seed(self, last_closed: Candle) -> None:
-        """Marks history as already processed so it is never emitted twice."""
-        self.last_closed_start = last_closed.start
+        """Marks history as already processed so it is never emitted twice (never moves backwards)."""
+        if self.last_closed_start is None or last_closed.start > self.last_closed_start:
+            self.last_closed_start = last_closed.start
 
     def update(self, tick: Tick) -> Optional[Candle]:
         start = candle_start(tick.ts, self.timeframe)
