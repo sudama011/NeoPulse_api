@@ -122,3 +122,25 @@ async def test_backlog_is_discarded_on_start(sf):
     await bot._skip_backlog()
     assert bot._offset == 42 and not c.risk.kill_switch
     await c.db_engine.dispose()
+
+
+async def test_manual_order_allowed_before_entry_window_but_kill_switch_still_applies(sf):
+    c, bot, tg = await _setup(sf)
+    early = MARKET_TIME.replace(hour=8, minute=40)
+    with (
+        patch("app.risk.manager.now_ist", return_value=early),
+        patch("app.control.telegram_bot.now_ist", return_value=early),
+    ):
+        await bot.handle_update(msg("/buy RELIANCE 3"))
+        assert "Market is not in its normal session" in tg.last()
+        await bot.handle_update(tap(tg))
+        await c.oms.drain()
+        assert c.engine.runner_for_symbol("RELIANCE").position.qty == 3
+
+        await c.risk.trip("test")
+        await bot.handle_update(msg("/buy RELIANCE 2"))
+        await bot.handle_update(tap(tg))
+        assert "kill switch" in list(tg.edits.values())[-1]
+    await c.engine.shutdown()
+    await c.oms.close()
+    await c.db_engine.dispose()

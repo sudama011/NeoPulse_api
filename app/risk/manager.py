@@ -73,16 +73,23 @@ class RiskManager:
     def day_pnl(self) -> DayPnl:
         return self._positions.day_pnl(self._prices)
 
-    async def check_entry(self, instance_id: str, qty: int, price: float, leverage: float = 1.0) -> Optional[str]:
-        """Returns None if the entry is allowed, else a human-readable rejection reason."""
+    async def check_entry(
+        self, instance_id: str, qty: int, price: float, leverage: float = 1.0, enforce_window: bool = True
+    ) -> Optional[str]:
+        """
+        Returns None if the entry is allowed, else a human-readable rejection reason.
+        `enforce_window=False` (operator/manual orders) skips the trading-day and entry-time checks;
+        whether the exchange accepts the order at that moment is then up to the broker.
+        """
         if self.kill_switch:
             return f"kill switch active ({self.kill_reason})"
 
-        now = now_ist()
-        if not is_trading_day(now.date(), self._settings.holidays):
-            return "not a trading day"
-        if not (MARKET_OPEN <= now.time() < self._entry_cutoff):
-            return f"outside entry window {MARKET_OPEN:%H:%M}-{self._entry_cutoff:%H:%M}"
+        if enforce_window:
+            now = now_ist()
+            if not is_trading_day(now.date(), self._settings.holidays):
+                return "not a trading day"
+            if not (MARKET_OPEN <= now.time() < self._entry_cutoff):
+                return f"outside entry window {MARKET_OPEN:%H:%M}-{self._entry_cutoff:%H:%M}"
 
         pnl = self.day_pnl()
         if pnl.net <= -self.max_daily_loss:

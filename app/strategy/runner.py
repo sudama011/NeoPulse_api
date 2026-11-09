@@ -137,6 +137,7 @@ class StrategyRunner:
         order_type: OrderType = OrderType.MARKET,
         price: float = 0.0,
         is_exit: bool = False,
+        manual: bool = False,
     ) -> OrderView | str:
         """Returns the submitted order, or a human-readable reason it was not sent."""
         if self._warming or not self._accepting:
@@ -155,7 +156,9 @@ class StrategyRunner:
         reduces = pos != 0 and (pos > 0) != (side is Side.BUY) and qty <= abs(pos)
         if not (is_exit or reduces):
             ref_price = price or (self.last_tick.ltp if self.last_tick else 0.0)
-            rejection = await self._deps.risk.check_entry(self.instance_id, qty, ref_price, self.cfg.leverage)
+            rejection = await self._deps.risk.check_entry(
+                self.instance_id, qty, ref_price, self.cfg.leverage, enforce_window=not manual
+            )
             if rejection:
                 self.logger.warning("Entry %s blocked by risk: %s", reason, rejection)
                 return f"blocked by risk: {rejection}"
@@ -189,7 +192,9 @@ class StrategyRunner:
         """An order placed by the operator (Telegram/API). Same guards as strategy orders."""
         async with self._lock:
             order_type = OrderType.LIMIT if limit_price else OrderType.MARKET
-            result = await self._submit(side, qty, reason="MANUAL", order_type=order_type, price=limit_price or 0.0)
+            result = await self._submit(
+                side, qty, reason="MANUAL", order_type=order_type, price=limit_price or 0.0, manual=True
+            )
             if isinstance(result, OrderView) and result.status not in (OrderStatus.REJECTED, OrderStatus.FAILED):
                 if stop or target:
                     self.state["stop"] = round(stop, 2) if stop else None

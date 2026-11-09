@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 from sqlalchemy import select
 
 from app.control.commands import CommandError, OrderIntent, parse_order, parse_protection
-from app.core.clock import now_ist, start_of_day, today_ist
+from app.core.clock import is_market_open, now_ist, start_of_day, today_ist
 from app.domain.models import Side
 from app.models import Order, StrategyInstance
 from app.notifications.telegram import TelegramClient
@@ -336,6 +336,8 @@ class TelegramBot:
         ltp = await self._ltp(info.token)
         ref = intent.limit_price or ltp
         details = f"LTP {ltp:.2f} · value ≈ {intent.qty * ref:,.0f}" if ref else "LTP unknown"
+        if not is_market_open(now_ist(), self._c.settings.holidays):
+            details += "\n⚠️ Market is not in its normal session; the exchange may reject or queue this order."
         if ltp and intent.stop and intent.limit_price is None:
             wrong = intent.stop >= ltp if side is Side.BUY else intent.stop <= ltp
             if wrong:
