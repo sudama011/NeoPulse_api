@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:15-alpine
-    container_name: neopulse_db
+    container_name: neopulse_db_container
     restart: always
     env_file: .env
     environment:

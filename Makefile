@@ -3,12 +3,14 @@ PY = $(VENV)/bin/python
 BIN = $(VENV)/bin
 
 .DEFAULT_GOAL := help
-.PHONY: help install run test test-unit lint format db-up db-down migrate migration sync backtest
+.PHONY: help install run test test-unit lint format db-up db-down db-backup db-drop-legacy migrate migration sync backtest
 
 help:
 	@echo "install      create .venv and install all dependencies"
 	@echo "db-up        start Postgres (docker compose)"
 	@echo "migrate      apply database migrations"
+	@echo "db-backup    dump the database to backups/"
+	@echo "db-drop-legacy  back up, then drop tables from the pre-v3 schema (one-off)"
 	@echo "migration    create a migration: make migration msg='describe change'"
 	@echo "sync         download the Kotak instrument master"
 	@echo "run          start the API + trading engine"
@@ -47,6 +49,15 @@ db-down:
 
 migrate:
 	$(BIN)/alembic upgrade head
+
+db-backup:
+	@mkdir -p backups
+	docker exec neopulse_db_container sh -c 'pg_dump -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --no-owner' \
+		> backups/neopulse_$$(date +%Y%m%d_%H%M%S).sql
+	@ls -lh backups | tail -1
+
+db-drop-legacy: db-backup
+	$(PY) -m scripts.drop_legacy_schema --yes
 
 migration:
 	@test -n "$(msg)" || (echo "usage: make migration msg='describe change'" && exit 1)

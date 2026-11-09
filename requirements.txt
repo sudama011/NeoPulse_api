@@ -1,11 +1,11 @@
-fastapi==0.128.0
-uvicorn==0.40.0
-SQLAlchemy[asyncio]==2.0.46
-asyncpg==0.31.0
-alembic==1.18.1
-pydantic-settings==2.12.0
+fastapi==0.162.2
+uvicorn==0.54.0
+SQLAlchemy[asyncio]==2.1.8
+asyncpg==0.32.0
+alembic==1.20.1
+pydantic-settings==2.16.2
 httpx==0.28.1
-pyotp==2.9.0
+pyotp==2.10.0
 kotakneoapi==3.0.13  # Kotak Neo SDK v3 (import name: neo_api_client)
-pandas==2.2.3
-numpy==2.1.0
+pandas==2.3.3  # kotakneoapi requires pandas<3
+numpy==2.5.4

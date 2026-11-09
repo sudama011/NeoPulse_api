@@ -39,4 +39,4 @@ class Notifier:
         try:
             await self._client.send_message(self._chat_id, text)
         except Exception as e:
-            logger.warning("Telegram send failed: %s", e)
+            logger.warning("Telegram send failed: %r", e)

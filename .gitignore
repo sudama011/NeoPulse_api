@@ -54,3 +54,4 @@ backtest/output/
 instruments_master.csv
 .coverage
 backtest/.cache/
+backups/
