@@ -115,7 +115,11 @@ class Container:
         if self.bot:
             self.tasks.periodic("telegram-bot", 5.0, self.bot.run)
         self.started = True
-        self.notifier.send(f"NeoPulse started ({self.mode})", level="SUCCESS")
+        ip = getattr(self.broker, "public_ip", None)
+        self.notifier.send(
+            f"NeoPulse started ({self.mode})" + (f"\nOrders go out from IP {ip} (must be whitelisted)" if ip else ""),
+            level="SUCCESS",
+        )
 
     async def stop(self) -> None:
         logger.info("🛑 Shutting down (positions are left as-is and resumed on restart)")

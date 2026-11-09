@@ -87,6 +87,7 @@ class KotakBroker(Broker):
         super().__init__()
         self.session = session
         self._feed_task: Optional[asyncio.Task] = None
+        self.public_ip: Optional[str] = None
 
     @property
     def client(self):
@@ -95,7 +96,22 @@ class KotakBroker(Broker):
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         await self.session.ensure_login()
+        self.public_ip = await self.fetch_public_ip()
+        logger.info(
+            "🌐 Orders will be sent from public IP %s (must be whitelisted in Kotak Neo Trade API)",
+            self.public_ip or "unknown",
+        )
         self._feed_task = asyncio.create_task(self._order_feed_loop(), name="kotak-order-feed")
+
+    async def fetch_public_ip(self) -> Optional[str]:
+        """The outbound IP Kotak sees; order placement is only authorised from a registered IP."""
+        try:
+            resp = await self.session.call(self.client.whatsmyip, retry_auth=False)
+            rows = resp.get("data") if isinstance(resp, dict) else None
+            return str(rows[0]["ip"]) if rows else None
+        except Exception as e:
+            logger.warning("whatsmyip failed: %s", e)
+            return None
 
     async def stop(self) -> None:
         if self._feed_task:
@@ -163,8 +179,16 @@ class KotakBroker(Broker):
             raise BrokerUnavailable(str(error))
 
         message = response_error(resp) or f"unexpected response: {resp}"
-        if is_auth_error(message):
-            raise OrderRejected(f"auth failure: {message}")
+        if is_auth_error(message) or (isinstance(resp, dict) and str(resp.get("stCode")) == "100008"):
+            # Reads with the same session succeed, so this is not an expired login: Kotak only accepts
+            # Trade API orders from the static IP registered for the API app (SEBI retail-algo rules).
+            ip = await self.fetch_public_ip()
+            self.public_ip = ip or self.public_ip
+            raise OrderRejected(
+                f"Kotak refused the order as unauthorized ({message}). Order placement is only allowed from "
+                f"the IP registered for your Trade API app; this server's public IP is {ip or 'unknown'}. "
+                "Whitelist it in Kotak Neo (Trade API settings) or run from the registered static IP."
+            )
         raise OrderRejected(message)
 
     async def cancel_order(self, broker_order_id: str) -> None:

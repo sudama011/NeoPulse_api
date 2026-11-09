@@ -131,3 +131,17 @@ async def test_paper_market_fill_and_limit_resting():
 async def test_paper_rejects_without_price():
     with pytest.raises(OrderRejected):
         await PaperBroker(lambda t: None).place_order(_req())
+
+
+async def test_kotak_unauthorized_order_explains_ip_whitelisting():
+    responses = [
+        {"stCode": 100008, "errMsg": "unauthorized", "stat": "Not_Ok"},  # place_order
+        {"data": [{"ip": "27.7.125.54"}], "stCode": 1000},  # whatsmyip
+    ]
+    session = SimpleNamespace(
+        client=SimpleNamespace(place_order=None, whatsmyip=None),
+        call=AsyncMock(side_effect=responses),
+        ensure_login=AsyncMock(),
+    )
+    with pytest.raises(OrderRejected, match=r"registered for your Trade API app.*27\.7\.125\.54"):
+        await KotakBroker(session).place_order(_req())
